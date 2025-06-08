@@ -1,0 +1,17 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ page_name|default("Page") }} - {{ super() }}{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <h2>{{ page_name|default("Content Area") }}</h2>
+    <hr>
+    <p>This page (<strong>{{ page_name|default("N/A") }}</strong>) is currently under construction or serves as a placeholder.</p>
+
+    {% if request.state.user_authenticated %}
+      <p class="text-muted">You are logged in as: {{ request.state.username }}</p>
+    {% endif %}
+
+    <p><a href="{{ request.url_for('serve_home_page') if request.url_for('serve_home_page') else '#' }}">Go back to Home Page</a></p>
+</div>
+{% endblock %}

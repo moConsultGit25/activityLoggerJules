@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000" # Map host port 8000 to container port 8000
+    volumes:
+      - ./src:/app/src # Mount src directory for live reload with uvicorn --reload
+      # You might also mount data if your CLI needs to access local files dynamically
+      # - ./data:/app/data
+    environment:
+      # MongoDB Configuration (points to the 'mongo' service below)
+      MONGO_URI: "mongodb://mongo:27017/activity_db_compose" # Changed DB name for clarity
+      AUTH_MONGO_DB_NAME: "auth_db_compose" # Separate DB for auth users
+
+      # JWT Authentication (CRITICAL: Override this in a .env file or for production)
+      JWT_SECRET_KEY: "unsafe_default_jwt_secret_for_compose_change_me"
+      ACCESS_TOKEN_EXPIRE_MINUTES: "60" # Example: 1 hour token validity
+
+      # Microsoft Graph API Credentials
+      # These should be set in a .env file which is read by docker-compose, or set in your shell environment.
+      # Docker Compose will automatically substitute ${VAR_NAME} if VAR_NAME is in the shell environment or a .env file.
+      AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
+      AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
+      AZURE_TENANT_ID: "${AZURE_TENANT_ID}"
+      GRAPH_TARGET_USER_ID: "${GRAPH_TARGET_USER_ID}"
+      GRAPH_MAIL_FOLDER: "${GRAPH_MAIL_FOLDER:-Inbox}" # Default to Inbox if not set in env
+
+      #PYTHONUNBUFFERED: 1 # Already set in Dockerfile, but can be overridden
+      #PYTHONPATH: "/app" # Already set in Dockerfile
+    depends_on:
+      - mongo # Ensures mongo service starts before the backend service
+    networks:
+      - app-network
+
+  mongo:
+    image: mongo:6.0 # Using MongoDB version 6.0
+    ports:
+      - "27017:27017" # Map host port 27017 to container port 27017 (standard MongoDB port)
+    volumes:
+      - mongodb_data:/data/db # Persist MongoDB data using a named volume
+    restart: unless-stopped # Ensures MongoDB restarts if it crashes, unless manually stopped
+    networks:
+      - app-network
+
+volumes:
+  mongodb_data: # Defines the named volume for persistent MongoDB data
+    driver: local
+
+networks:
+  app-network: # Defines a custom bridge network for services to communicate
+    driver: bridge

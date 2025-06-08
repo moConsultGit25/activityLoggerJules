@@ -1,0 +1,36 @@
+{% extends "layout.html" %}
+
+{% block title %}Home - {{ super() }}{% endblock %}
+
+{% block content %}
+<div class="jumbotron">
+    <h1 class="display-4">Welcome to the Activity Logger!</h1>
+    <p class="lead">This application helps you ingest, analyze, and log activities from various sources.</p>
+    <hr class="my-4">
+    {% if request.state.user_authenticated %}
+        <p>You are logged in as {{ request.state.username }}.</p>
+        <a class="btn btn-primary btn-lg" href="{{ request.url_for('serve_dashboard_page') if request.url_for('serve_dashboard_page') else '#' }}" role="button">Go to Dashboard</a>
+        <a class="btn btn-secondary btn-lg" href="{{ request.url_for('handle_logout') if request.url_for('handle_logout') else '#' }}" role="button">Logout</a>
+    {% else %}
+        <p>Please log in or register to manage your activities.</p>
+        <a class="btn btn-primary btn-lg" href="{{ request.url_for('serve_login_page') if request.url_for('serve_login_page') else '#' }}" role="button">Login</a>
+        <a class="btn btn-info btn-lg" href="{{ request.url_for('serve_register_page') if request.url_for('serve_register_page') else '#' }}" role="button">Register</a>
+    {% endif %}
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <h4>About</h4>
+        <p>This system uses a modern Python stack including FastAPI, Pydantic, and MongoDB, structured around Domain-Driven Design principles.</p>
+    </div>
+    <div class="col-md-6">
+        <h4>Features (Highlights)</h4>
+        <ul>
+            <li>Email Ingestion & Processing</li>
+            <li>Content Summarization & Classification</li>
+            <li>Secure API with JWT Authentication</li>
+            <li>Activity Logging to MongoDB</li>
+        </ul>
+    </div>
+</div>
+{% endblock %}

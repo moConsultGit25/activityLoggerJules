@@ -1,0 +1,36 @@
+{% extends "layout.html" %}
+
+{% block title %}Login - {{ super() }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <h2>Login</h2>
+
+        {# Example of how to display a single error message passed directly to template context #}
+        {% if error_message %}
+            <div class="alert alert-danger" role="alert">
+                {{ error_message }}
+            </div>
+        {% endif %}
+
+        <form method="post" action="{{ request.url_for('handle_login_form') }}">
+            {# Note: action attribute should match the name of your POST /login route in the frontend router #}
+            <div class="form-group">
+                <label for="username">Username (Email)</label>
+                <input type="email" class="form-control" id="username" name="username"
+                       value="{{ request.form.get('username', '') if request.form else '' }}" required>
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" class="form-control" id="password" name="password" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Login</button>
+        </form>
+        <p class="mt-3">
+            Don't have an account?
+            <a href="{{ request.url_for('serve_register_page') if request.url_for('serve_register_page') else '#' }}">Register here</a>.
+        </p>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+env/
+venv/
+.venv/
+
+# Git
+.git/
+.gitignore
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Secrets and sensitive files
+.env
+*.pem
+*.key
+credentials.json
+# Add any other files containing secrets
+
+# Logs and databases (if stored locally outside Docker volumes)
+*.log
+*.sqlite3
+# data/ # Uncomment if 'data' dir contains large files or sensitive info not for the image.
+#       # If sample_email.eml is used by CLI for testing, it might be needed.
+#       # For now, Dockerfile copies ./data, so keep it commented here if that's intended.
+
+# Test files (if not needed in production image, though often are for image testing)
+# tests/
+# .pytest_cache/
+# coverage.xml
+# htmlcov/
+
+# Docker specific (if any layered builds or local docker files)
+# Dockerfile # Usually not ignored, but can be if building from a script that copies it
+# docker-compose.yml # Same as above
+
+# Other project specific
+# node_modules/ # If you had any frontend JS built separately
+# temp files
+*.tmp
+*.bak

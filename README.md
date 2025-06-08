@@ -2,51 +2,25 @@
 
 ## Description
 
-This project automatically processes and logs activity from various engagement data sources, starting with email (.eml) files. It is architected using Domain-Driven Design (DDD) principles and an event-driven approach to decouple different stages of processing. It extracts key information, summarizes content, classifies it based on keywords, and logs these activities into a MongoDB database.
+This project automatically processes and logs activity from various engagement data sources, starting with email (.eml) files. It is architected using Domain-Driven Design (DDD) principles and an event-driven approach to decouple different stages of processing. It extracts key information, summarizes content, classifies it based on keywords, and logs these activities into a MongoDB database. An API is also provided for programmatic interaction.
 
 ## Features
 
-*   **Domain-Driven Design:** Organized into Bounded Contexts (`Ingestion`, `Analysis`, `ActivityLog`) for clear separation of concerns.
+*   **Domain-Driven Design:** Organized into Bounded Contexts (`Ingestion`, `Analysis`, `ActivityLog`, `Auth`) for clear separation of concerns.
 *   **Event-Driven Architecture:** Uses an in-process event dispatcher (`shared_kernel.events`) to signal completion of tasks (e.g., `EmailIngestedEvent`, `ContentAnalyzedEvent`) and trigger downstream processes.
-*   **Email Parsing:** Parses `.eml` files to extract sender, recipient, subject, body, and other metadata.
+*   **FastAPI Web API:** Provides endpoints for ingesting emails, retrieving activity logs, user registration, and login.
+*   **Email Parsing:** Parses `.eml` files (local upload or from Microsoft Graph).
+*   **Cloud Email Ingestion:** Supports fetching emails from Microsoft 365 mailboxes via Microsoft Graph API.
 *   **Text Summarization:** Generates a concise summary of the email body.
-*   **Content Classification:** Categorizes emails based on keywords to determine disposition (e.g., "Sales Inquiry", "Support Request").
-*   **MongoDB Logging:** Stores processed activity records in a MongoDB database using a repository pattern.
-*   **Modular and Testable:** Core functionalities are well-defined within their contexts and layers, supported by unit tests.
+*   **Content Classification:** Categorizes emails based on keywords to determine disposition.
+*   **MongoDB Storage:** Uses MongoDB for storing user credentials and processed activity records.
+*   **JWT Authentication:** Secures API endpoints using JSON Web Tokens.
+*   **Containerized:** Provides `Dockerfile` and `docker-compose.yml` for easy setup and deployment.
+*   **Modular and Testable:** Core functionalities are well-defined and supported by unit tests.
 
 ## Architecture
 
-The system is divided into several Bounded Contexts, each with its own domain, application services, and infrastructure components:
-
-*   **`IngestionContext`**:
-    *   **Responsibilities**: Handles the initial intake and parsing of raw data. Currently focused on `.eml` files.
-    *   **Key Components**: `EmailParser` (infrastructure), `IngestionService` (application), `RawEmail` (domain model).
-    *   **Output**: Publishes an `EmailIngestedEvent` containing data from the parsed email.
-
-*   **`AnalysisContext`**:
-    *   **Responsibilities**: Performs content analysis on ingested data. This includes text summarization and disposition classification.
-    *   **Key Components**: `ContentAnalyzerTools` (application-level tools for summarization/disposition), `AnalysisService` (application), `AnalyzedContent` (domain model).
-    *   **Input**: Subscribes to `EmailIngestedEvent`.
-    *   **Output**: Publishes a `ContentAnalyzedEvent` with the analysis results.
-
-*   **`ActivityLogContext`**:
-    *   **Responsibilities**: Manages the storage and retrieval of finalized activity records.
-    *   **Key Components**: `MongoActivityRepository` (infrastructure for MongoDB interaction), `LogService` (application), `ActivityRecord` (domain model).
-    *   **Input**: Subscribes to `ContentAnalyzedEvent`.
-    *   **Output**: Stores `ActivityRecord` instances in MongoDB.
-
-*   **`SharedKernel`**:
-    *   **Responsibilities**: Contains code shared across multiple contexts, primarily the eventing mechanism.
-    *   **Key Components**: `DomainEvent` base class, specific event classes (`EmailIngestedEvent`, `ContentAnalyzedEvent`), and the `EventDispatcher`.
-
-**Event Flow:**
-1.  An email file is processed by `IngestionService`.
-2.  Upon successful parsing, `IngestionService` publishes an `EmailIngestedEvent`.
-3.  `AnalysisContext` (via `handle_email_ingested` handler) receives this event.
-4.  `AnalysisService` is invoked to summarize and classify the content.
-5.  `AnalysisContext` then publishes a `ContentAnalyzedEvent`.
-6.  `ActivityLogContext` (via `handle_content_analyzed` handler) receives this event.
-7.  `LogService` is invoked to create an `ActivityRecord` and store it in MongoDB via `MongoActivityRepository`.
+The system is divided into several Bounded Contexts: `IngestionContext`, `AnalysisContext`, `ActivityLogContext`, `AuthContext`, and a `SharedKernel` for eventing. (Refer to previous descriptions for details on each context and the event flow).
 
 ## Project Structure
 
@@ -54,30 +28,29 @@ The system is divided into several Bounded Contexts, each with its own domain, a
 .
 ├── data/                     # Sample data (e.g., sample_email.eml)
 ├── src/                      # Source code
-│   ├── activity_log_context/ # Manages storing activity records
-│   │   ├── application/
-│   │   ├── domain/
-│   │   ├── infrastructure/
-│   │   └── interfaces/       # Event handlers
-│   ├── analysis_context/     # Content analysis (summarization, disposition)
-│   │   ├── application/
-│   │   ├── domain/
-│   │   └── interfaces/       # Event handlers
-│   ├── ingestion_context/    # Email parsing and initial data intake
-│   │   ├── application/
-│   │   ├── domain/
-│   │   └── infrastructure/
-│   ├── shared_kernel/        # Shared components like event dispatcher
-│   │   └── events.py
-│   ├── __init__.py           # Makes 'src' a package
-│   └── main.py               # Main application entry point
-├── tests/                    # Unit tests mirroring src structure
 │   ├── activity_log_context/
 │   ├── analysis_context/
+│   ├── api/                    # FastAPI application (src.api.main:app)
+│   │   ├── v1/
+│   │   │   ├── routers/
+│   │   │   └── schemas/
+│   │   └── main.py
+│   ├── auth_context/
+│   ├── frontend/             # Jinja2 templates, static files, frontend routers
+│   │   ├── routers/
+│   │   ├── static/
+│   │   └── templates/
 │   ├── ingestion_context/
-│   └── shared_kernel/
-├── README.md                 # This file
-└── requirements.txt          # Python dependencies (nltk, pymongo)
+│   ├── shared_kernel/
+│   ├── __init__.py
+│   └── main.py               # CLI entry point (src.main:main)
+├── tests/
+├── .dockerignore             # Files to ignore in Docker image
+├── Dockerfile                # Instructions to build the application image
+├── docker-compose.yml        # Defines services, networks, and volumes for Docker
+├── DEPLOYMENT_GCP.md         # Example deployment plan for Google Cloud Platform
+├── README.md
+└── requirements.txt
 ```
 
 ## Setup
@@ -88,85 +61,130 @@ The system is divided into several Bounded Contexts, each with its own domain, a
     cd <repository_name>
     ```
 
-2.  **Install MongoDB:**
-    *   This project uses MongoDB to store activity logs.
-    *   Download and install MongoDB Community Edition from the [official MongoDB website](https://www.mongodb.com/try/download/community).
-    *   Ensure your MongoDB server is running.
+2.  **Install Docker and Docker Compose:**
+    *   If you plan to run the application using Docker (recommended for a consistent environment), ensure you have Docker Desktop (for Mac/Windows) or Docker Engine & Docker Compose (for Linux) installed.
+    *   See [Docker documentation](https://docs.docker.com/get-docker/) for installation instructions.
 
-3.  **Create a Virtual Environment (Recommended):**
+3.  **Install MongoDB (if not using Docker's MongoDB service):**
+    *   If you prefer to run MongoDB natively, install it from the [official MongoDB website](https://www.mongodb.com/try/download/community) and ensure it's running. You'll need to adjust `MONGO_URI` environment variable accordingly if not using `mongodb://mongo:27017`.
+
+4.  **Create a Virtual Environment (for local development without Docker):**
     ```bash
     python -m venv venv
     source venv/bin/activate  # On Windows: venv\Scripts\activate
     ```
 
-4.  **Install Dependencies:**
+5.  **Install Dependencies (for local development without Docker):**
     ```bash
     pip install -r requirements.txt
     ```
-    This will install `pymongo` (for MongoDB) and `nltk` (for potential future text processing enhancements).
+    This installs `pymongo`, `fastapi`, `uvicorn`, `passlib[bcrypt]`, `python-jose[cryptography]`, `msal`, `jinja2`, `httpx`, etc.
 
-5.  **MongoDB Configuration:**
-    *   The application connects to MongoDB using the following environment variables:
-        *   `MONGO_URI`: The MongoDB connection string (e.g., `mongodb://localhost:27017/`).
-        *   `MONGO_DB_NAME`: The name of the database to use.
-    *   If these environment variables are not set, it defaults to:
-        *   URI: `mongodb://localhost:27017/`
-        *   Database Name: `activity_db_default`
-    *   The default collection name used is `activity_records`.
+6.  **Environment Variables for Configuration:**
+    *   Create a `.env` file in the project root for local development (this file is in `.gitignore`). Docker Compose will automatically pick it up.
+    *   **Example `.env` file content:**
+        ```env
+        # MongoDB
+        MONGO_URI="mongodb://mongo:27017/activity_db_docker_dev" # Use 'mongo' as hostname for Docker Compose service
+        # MONGO_URI="mongodb://localhost:27017/activity_db_local_dev" # For local MongoDB
+        AUTH_MONGO_DB_NAME="auth_db_docker_dev"
+        # AUTH_MONGO_DB_NAME="auth_db_local_dev" # For local MongoDB
 
-6.  **NLTK Data (for Summarization - future use):**
-    The current summarizer uses a simple split-by-period method. If it's upgraded to use `nltk.sent_tokenize` for more advanced sentence tokenization, you will need to download the 'punkt' dataset:
+        # JWT Authentication
+        JWT_SECRET_KEY="a_very_strong_and_random_secret_key_for_development_only" # CHANGE THIS!
+        ACCESS_TOKEN_EXPIRE_MINUTES="60"
+
+        # Microsoft Graph API (Optional - for cloud email ingestion)
+        # Obtain these from your Azure App Registration
+        AZURE_CLIENT_ID=""
+        AZURE_CLIENT_SECRET=""
+        AZURE_TENANT_ID=""
+        GRAPH_TARGET_USER_ID="" # e.g., user@yourdomain.com or Azure AD User Object ID
+        GRAPH_MAIL_FOLDER="Inbox" # Optional, defaults to Inbox
+        ```
+    *   **Important Notes on Environment Variables:**
+        *   For Dockerized deployment, these variables are typically set within the `docker-compose.yml` or injected by the deployment platform. The `docker-compose.yml` provided uses `${VAR_NAME}` substitution, which means it will try to get values from your shell environment or a `.env` file in the same directory as `docker-compose.yml`.
+        *   `JWT_SECRET_KEY`: **Crucial for production.** Must be a strong, unique, random string.
+        *   Azure credentials are required only if you intend to use the Microsoft Graph email ingestion feature. Your Azure AD App Registration needs appropriate API permissions (e.g., `Mail.Read` for the application).
+
+7.  **NLTK Data (for Summarization - future use):**
+    The current summarizer is simple. For advanced `nltk.sent_tokenize`:
     ```python
-    # Run this in a Python interpreter after installing nltk
     import nltk
     nltk.download('punkt')
     ```
 
-## Usage
+## Running with Docker (Recommended for Development & Production-like Environment)
 
-The main script `src/main.py` is used to process a single email file, triggering the event-driven workflow.
+1.  **Ensure Docker and Docker Compose are installed.** (See Setup step 2).
+2.  **Set up Environment Variables:**
+    *   Create a `.env` file in the project root as described in "Setup" (step 6), especially for `JWT_SECRET_KEY` and any Azure credentials if you plan to test Graph ingestion. The `docker-compose.yml` is configured to use these.
+3.  **Build and Run the Services:**
+    Navigate to the project root directory (where `docker-compose.yml` is located) and run:
+    ```bash
+    docker-compose up --build
+    ```
+    *   `--build`: Forces Docker to rebuild the `backend` image if `Dockerfile` or application code has changed.
+    *   This command will start two services: `backend` (your FastAPI application) and `mongo` (the MongoDB database).
+    *   The `backend` service's port 8000 is mapped to port 8000 on your host machine.
+    *   MongoDB's port 27017 is mapped to port 27017 on your host.
+    *   MongoDB data will be persisted in a Docker named volume (`mongodb_data`), so it survives container restarts.
+4.  **Accessing the Application:**
+    *   **API:** `http://localhost:8000` (API root, returns JSON message)
+    *   **API Docs (Swagger UI):** `http://localhost:8000/docs`
+    *   **API Docs (ReDoc):** `http://localhost:8000/redoc`
+    *   **Frontend Web Interface:** `http://localhost:8000/app/` (e.g., `http://localhost:8000/app/login`)
+5.  **Stopping the Application:**
+    Press `Ctrl+C` in the terminal where `docker-compose up` is running. To remove the containers (but not the MongoDB data volume):
+    ```bash
+    docker-compose down
+    ```
+    To remove containers AND the data volume (useful for a clean start):
+    ```bash
+    docker-compose down -v
+    ```
 
-```bash
-python src/main.py --email-file path/to/your/email.eml
-```
+## Usage (Local Development without Docker)
 
-**Command-Line Arguments:**
+If you are not using Docker:
 
-*   `--email-file FILE_PATH` (Required): Path to the `.eml` file to be processed.
-    *   Example: `data/sample_email.eml`
+1.  Ensure MongoDB is running locally and accessible (adjust `MONGO_URI` in your environment or `.env` file if not using `mongodb://localhost:27017/`).
+2.  Set all required environment variables (see Setup step 6).
+3.  **Run the API server:**
+    ```bash
+    uvicorn src.api.main:app --reload
+    ```
+    Access points are the same as with Docker (API at `http://localhost:8000`, Frontend at `http://localhost:8000/app/`).
+4.  **CLI for Email File Processing:**
+    ```bash
+    python src/main.py --email-file data/sample_email.eml
+    ```
 
-**Example:**
-```bash
-python src/main.py --email-file data/sample_email.eml
-```
-This will process `data/sample_email.eml`. The application will:
-1.  Parse the email.
-2.  Publish an `EmailIngestedEvent`.
-3.  The AnalysisContext will handle this event, analyze the content, and publish a `ContentAnalyzedEvent`.
-4.  The ActivityLogContext will handle this second event and store an `ActivityRecord` in MongoDB.
-
-Check the console output for logs from the services and event handlers. Verify the data in your MongoDB instance (default database `activity_db_default`, collection `activity_records`).
+Check console output for logs. Verify data in your MongoDB instance.
 
 ## Running Tests
 
-To run the suite of unit tests (which now mock external dependencies like MongoDB for repository tests):
-
+To run unit tests (mocking external dependencies):
 ```bash
 python -m unittest discover tests
 ```
-This command will automatically discover and run all tests within the `tests` directory. Ensure you have installed dependencies from `requirements.txt` first.
+
+## Deployment
+
+For an example deployment plan to Google Cloud Platform (GCP), detailing the use of services like Cloud Run, Artifact Registry, MongoDB Atlas, and Secret Manager, see [DEPLOYMENT_GCP.md](DEPLOYMENT_GCP.md).
 
 ## Future Enhancements
-
-*   **Asynchronous Event Handling:** Implement event handlers to run asynchronously (e.g., using `asyncio` or a task queue like Celery) for improved performance and resilience.
-*   **Robust Eventing System:** Replace the in-process event dispatcher with a dedicated message broker (e.g., RabbitMQ, Kafka) for inter-service communication if the application grows into multiple services.
-*   **API for Activity Logs:** Develop an API (e.g., REST or GraphQL) to query and retrieve logged activities from MongoDB.
-*   **IMAP Integration for Email Ingestion:** Fetch emails directly from email servers.
-*   **Advanced Text Analysis:** Incorporate more sophisticated NLP techniques for summarization (e.g., transformer models) and classification (e.g., ML models).
-*   **Configuration Management:** Externalize configurations (keywords, model paths, etc.) into configuration files or environment variables more comprehensively.
-*   **Full Repositories for All Contexts:** Implement repositories for `RawEmail` and `AnalyzedContent` if direct querying or persistence of these intermediate domain objects becomes necessary.
-*   **Web Interface:** A simple UI for uploading emails or viewing logged activities.
-*   **Batch Processing:** Support for processing multiple email files or other data sources in batch.
-*   **Attachment Handling:** Extract and process information from email attachments.
-*   **Distributed Tracing & Monitoring:** Implement tools for observing and debugging the event flow across contexts.
+(List remains largely the same as previous version, with "Containerization" now implemented)
+*   **Full User Authentication API Endpoints:** (Partially done, needs e.g. /users/me, password reset etc.)
+*   **Asynchronous Event Handling.**
+*   **Robust Eventing System (RabbitMQ/Kafka).**
+*   **API for Querying Specific Logs with advanced filtering.**
+*   **IMAP Integration.**
+*   **Advanced NLP.**
+*   **Comprehensive Configuration Management.**
+*   **Repositories for `RawEmail` and `AnalyzedContent`.**
+*   **Web Interface (more features beyond login, register, dashboard).**
+*   **Batch Processing.**
+*   **Attachment Handling.**
+*   **Distributed Tracing & Monitoring.**
 ```
