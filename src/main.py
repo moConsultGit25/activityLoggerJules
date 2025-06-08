@@ -1,94 +1,77 @@
 import argparse
-import datetime
-import os
-import uuid # For generating unique email IDs if not present in EML
+import os # For file existence check and other OS interactions if needed
 
-from ingestion.email_processor import parse_eml_file
-from summarization.summarizer import summarize_text
-from disposition.classifier import classify_email_content
-from logging.logger import log_activity, DEFAULT_LOG_DIR
+# Import application services and context-specific setup
+from src.ingestion_context.application import IngestionService
 
-def main_process(email_file_path, log_file_path):
+# Import event handler registration functions
+from src.analysis_context.interfaces.event_handlers import register_analysis_event_handlers
+from src.activity_log_context.interfaces.event_handlers import register_activity_log_event_handlers
+# The global dispatcher is implicitly used by these registration functions and services when they publish.
+# from src.shared_kernel.events import dispatcher # Not strictly needed here unless interacting directly
+
+def setup_application():
     """
-    Orchestrates the processing of a single email file.
+    Initializes the application by registering event handlers.
+    This ensures that when events are published, the appropriate handlers
+    across different contexts are notified.
     """
-    print(f"Processing email file: {email_file_path}")
+    print("Starting application setup...")
 
-    parsed_email = parse_eml_file(email_file_path)
+    # Register event handlers from all relevant contexts
+    register_analysis_event_handlers()
+    register_activity_log_event_handlers()
 
-    if not parsed_email:
-        print(f"Failed to parse email file: {email_file_path}")
-        return
+    print("Application setup complete: Event handlers registered.")
+    print("----------------------------------------------------")
 
-    email_id = parsed_email.get('message-id') or str(uuid.uuid4()) # Use EML Message-ID or generate one
-    sender = parsed_email.get('sender')
-    recipient = parsed_email.get('recipient')
-    subject = parsed_email.get('subject', '') # Default to empty string if no subject
-    body = parsed_email.get('body', '')    # Default to empty string if no body
-
-    if not body and subject: # If body is empty, try to use subject for summarization/classification
-        print("Email body is empty, using subject for content analysis.")
-        content_to_analyze = subject
-    elif not body and not subject:
-        print("Email body and subject are empty. Cannot process further.")
-        # Optionally log this minimal info
-        activity_data = {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'email_id': email_id,
-            'sender': sender,
-            'recipient': recipient,
-            'subject': subject,
-            'summary': 'Empty email content',
-            'disposition': 'Unprocessable',
-            'original_file_path': email_file_path
-        }
-        log_activity(log_file_path, activity_data)
-        return
-    else:
-        content_to_analyze = body
-
-    summary = summarize_text(content_to_analyze, num_sentences=2)
-
-    # Classify based on combined subject and body for more context, if available
-    classification_text = subject + " " + body if subject and body else content_to_analyze
-    disposition = classify_email_content(classification_text)
-
-    activity_data = {
-        'timestamp': datetime.datetime.now().isoformat(),
-        'email_id': email_id,
-        'sender': sender,
-        'recipient': recipient,
-        'subject': subject,
-        'summary': summary,
-        'disposition': disposition,
-        'original_file_path': email_file_path
-    }
-
-    log_activity(log_file_path, activity_data)
-    print(f"Email processed. Sender: {sender}, Subject: {subject}, Disposition: {disposition}")
-    print(f"Activity logged to: {log_file_path}")
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Process and log email files.")
-    parser.add_argument("--email-file", required=True, help="Path to the .eml file to process.")
-    parser.add_argument("--log-file",
-                        default=os.path.join(DEFAULT_LOG_DIR, "activity_log.csv"),
-                        help=f"Path to the CSV log file. Defaults to 'data/activity_log.csv'.")
+def main():
+    """
+    Main function to run the email processing pipeline.
+    Parses command-line arguments, sets up the application,
+    and starts the ingestion process.
+    """
+    parser = argparse.ArgumentParser(description="Process a single email file and trigger event-driven workflow.")
+    parser.add_argument(
+        "--email-file",
+        type=str,
+        required=True,
+        help="Path to the .eml file to process."
+    )
+    # Future arguments could include config paths, specific context flags, etc.
+    # parser.add_argument("--config", type=str, help="Path to a configuration file.")
 
     args = parser.parse_args()
 
-    # Ensure the directory for the log file exists, if it's not the default which logger handles
-    log_dir = os.path.dirname(args.log_file)
-    if log_dir and not os.path.exists(log_dir) :
-        try:
-            os.makedirs(log_dir)
-            print(f"Created log directory: {log_dir}")
-        except OSError as e:
-            print(f"Error creating log directory {log_dir}: {e}")
-            # Decide if to exit or let log_activity handle it
-            # For now, let log_activity attempt to create it if it's the default path
+    # --- Application Setup ---
+    setup_application()
+
+    # --- Process Email ---
+    print(f"Processing email file: {args.email_file}")
 
     if not os.path.isfile(args.email_file):
-        print(f"Error: Email file not found at {args.email_file}")
+        print(f"Error: Email file not found at '{args.email_file}'. Please provide a valid file path.")
+        return
+
+    # Initialize the primary service that starts the process
+    ingestion_service = IngestionService()
+
+    # Start the process by ingesting the email.
+    # This will trigger an EmailIngestedEvent, which then triggers analysis,
+    # which in turn triggers ContentAnalyzedEvent, leading to logging.
+    raw_email_obj = ingestion_service.ingest_email_from_file(args.email_file)
+
+    if raw_email_obj:
+        print(f"\nEmail file '{args.email_file}' ingested successfully.")
+        print(f"  -> RawEmail ID: {raw_email_obj.message_id}")
+        print(f"  -> This should have triggered analysis and logging via domain events.")
+        print(f"  -> Check console output from handlers and MongoDB (if running) for 'activity_records' in your database (e.g., 'activity_db_default').")
     else:
-        main_process(args.email_file, args.log_file)
+        print(f"\nFailed to ingest email file '{args.email_file}'. See previous error messages for details.")
+
+    print("----------------------------------------------------")
+    print("Processing finished.")
+
+if __name__ == '__main__':
+    # This is the main entry point of the application when run as a script.
+    main()
