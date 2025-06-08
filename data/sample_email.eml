@@ -1,0 +1,13 @@
+From: sender@example.com
+To: receiver@example.com
+Subject: Test Email for Logging - Quote Request & Support
+Date: Mon, 1 Jan 2023 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+This is the body of the test email.
+It contains a request for a quote for our new project. We are very interested in your pricing.
+We also need help with a previous installation, as we encountered an error.
+Please send the invoice for the last job as well.
+Thank you.
