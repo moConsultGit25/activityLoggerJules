@@ -6,6 +6,7 @@ from pathlib import Path # To construct paths for templates and static files
 
 # Import API routers
 from .v1.routers import ingestion, logs, auth
+from .v1.routers import tasks as tasks_router # Added tasks_router
 
 # Import Frontend routers
 from src.frontend.routers import pages as frontend_pages
@@ -50,6 +51,7 @@ async def startup_event():
 app.include_router(ingestion.router, prefix="/api/v1/ingestion", tags=["Ingestion API"])
 app.include_router(logs.router, prefix="/api/v1/logs", tags=["Activity Logs API"])
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication API"])
+app.include_router(tasks_router.router, prefix="/api/v1/tasks", tags=["Tasks API"]) # Added tasks router
 
 # Include Frontend router
 # (Mounting it at "/app" to distinguish from API, or can be at root if desired)

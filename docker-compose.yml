@@ -4,50 +4,101 @@ services:
   backend:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile # Uses development Dockerfile with --reload for FastAPI app
     ports:
-      - "8000:8000" # Map host port 8000 to container port 8000
+      - "8000:8000"
     volumes:
-      - ./src:/app/src # Mount src directory for live reload with uvicorn --reload
-      # You might also mount data if your CLI needs to access local files dynamically
-      # - ./data:/app/data
+      - ./src:/app/src # Mount src for live reload of FastAPI app code
     environment:
-      # MongoDB Configuration (points to the 'mongo' service below)
-      MONGO_URI: "mongodb://mongo:27017/activity_db_compose" # Changed DB name for clarity
-      AUTH_MONGO_DB_NAME: "auth_db_compose" # Separate DB for auth users
+      # Service Dependencies
+      REDIS_URL: "redis://redis:6379/0" # For Celery task status checks via API
+      MONGO_URI: "mongodb://mongo:27017/activity_db_compose"
+      AUTH_MONGO_DB_NAME: "auth_db_compose"
 
-      # JWT Authentication (CRITICAL: Override this in a .env file or for production)
-      JWT_SECRET_KEY: "unsafe_default_jwt_secret_for_compose_change_me"
-      ACCESS_TOKEN_EXPIRE_MINUTES: "60" # Example: 1 hour token validity
+      # JWT Authentication
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-unsafe_default_jwt_secret_for_compose_change_me}"
+      ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
 
-      # Microsoft Graph API Credentials
-      # These should be set in a .env file which is read by docker-compose, or set in your shell environment.
-      # Docker Compose will automatically substitute ${VAR_NAME} if VAR_NAME is in the shell environment or a .env file.
+      # Microsoft Graph API Credentials (from .env file or host environment)
       AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
       AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
       AZURE_TENANT_ID: "${AZURE_TENANT_ID}"
       GRAPH_TARGET_USER_ID: "${GRAPH_TARGET_USER_ID}"
-      GRAPH_MAIL_FOLDER: "${GRAPH_MAIL_FOLDER:-Inbox}" # Default to Inbox if not set in env
+      GRAPH_MAIL_FOLDER: "${GRAPH_MAIL_FOLDER:-Inbox}"
 
-      #PYTHONUNBUFFERED: 1 # Already set in Dockerfile, but can be overridden
-      #PYTHONPATH: "/app" # Already set in Dockerfile
+      PYTHONUNBUFFERED: "1" # Set in Dockerfile, reiterated for clarity
+      PYTHONPATH: "/app"    # Set in Dockerfile, reiterated for clarity
     depends_on:
-      - mongo # Ensures mongo service starts before the backend service
+      - mongo
+      - redis # Backend might check task status, so good to have Redis up
     networks:
       - app-network
+    restart: unless-stopped
 
   mongo:
-    image: mongo:6.0 # Using MongoDB version 6.0
+    image: mongo:6.0
+    container_name: activity_logger_mongo
     ports:
-      - "27017:27017" # Map host port 27017 to container port 27017 (standard MongoDB port)
+      - "27017:27017"
     volumes:
-      - mongodb_data:/data/db # Persist MongoDB data using a named volume
-    restart: unless-stopped # Ensures MongoDB restarts if it crashes, unless manually stopped
+      - mongodb_data:/data/db
     networks:
       - app-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: activity_logger_redis
+    ports:
+      - "6379:6379" # Expose Redis on host for local debugging/monitoring if needed
+    volumes:
+      - redis_data:/data # Persist Redis data (optional, but good for some setups)
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      # Uses the same Dockerfile as backend for dev consistency.
+      # Celery worker itself doesn't auto-reload Python task code like Uvicorn --reload.
+      # For changes in task definitions, rebuild the image or restart the worker container.
+      # With src mounted (see volumes), a 'docker-compose restart worker' is often enough.
+      dockerfile: Dockerfile
+    container_name: activity_logger_worker
+    # Command to start Celery worker.
+    # -A: Specify the Celery app instance.
+    # -l: Log level.
+    # -Q: Specify queues to consume from (optional, defaults to 'celery' if not specified).
+    # You can add more queues like -Q high_priority,default_queue
+    command: celery -A src.task_queue.celery_app worker -l INFO
+    volumes:
+      - ./src:/app/src # Mount src to pick up Python code changes (restart worker needed)
+    environment:
+      # Must match backend and point to respective services
+      REDIS_URL: "redis://redis:6379/0"
+      MONGO_URI: "mongodb://mongo:27017/activity_db_compose"
+      AUTH_MONGO_DB_NAME: "auth_db_compose"
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-unsafe_default_jwt_secret_for_compose_change_me}"
+      AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
+      AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
+      AZURE_TENANT_ID: "${AZURE_TENANT_ID}"
+      GRAPH_TARGET_USER_ID: "${GRAPH_TARGET_USER_ID}"
+      GRAPH_MAIL_FOLDER: "${GRAPH_MAIL_FOLDER:-Inbox}"
+      ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-60}"
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: "/app"
+    depends_on:
+      - redis  # Worker needs Redis (broker) to start
+      - mongo  # Tasks might interact with MongoDB via services
+    networks:
+      - app-network
+    restart: unless-stopped
 
 volumes:
   mongodb_data: # Defines the named volume for persistent MongoDB data
+    driver: local
+  redis_data:   # Defines the named volume for persistent Redis data (optional)
     driver: local
 
 networks:

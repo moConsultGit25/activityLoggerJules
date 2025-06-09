@@ -2,148 +2,156 @@
 
 ## 1. Introduction
 
-This document outlines a plan for deploying the containerized "Automated Activity Logger" application to Google Cloud Platform (GCP). It assumes the application has been containerized (as per `Dockerfile.prod`) and that `cloudbuild.yaml` and `gcp_configs/cloudrun/service.yaml` are available as starting points for CI/CD and declarative service configuration.
+This document outlines a plan for deploying the containerized "Automated Activity Logger" application to Google Cloud Platform (GCP). It assumes the application has been containerized (using `Dockerfile.prod`), uses Celery for asynchronous tasks with Redis as a broker, and has configurations like `cloudbuild.yaml` and `gcp_configs/cloudrun/service.yaml` as starting points.
 
-The primary goal is to deploy a scalable, secure, and maintainable version of the application on GCP.
+The primary goal is to deploy a scalable, secure, and maintainable version of the application, including its web server, API, and background Celery workers.
 
 ## 2. Prerequisites
 
-*   **Google Cloud SDK (`gcloud` CLI):** Installed and authenticated with appropriate permissions for your GCP project. ([Installation Guide](https://cloud.google.com/sdk/docs/install))
-*   **GCP Project:** A Google Cloud Project created with billing enabled. Note your `PROJECT_ID`.
-*   **Docker:** Docker installed locally if you need to build and test images locally before pushing or using Cloud Build.
-*   **Enabled APIs:** Ensure the following APIs are enabled in your GCP project:
-    *   Artifact Registry API (to store Docker images)
-    *   Cloud Run API (to run the service)
-    *   Secret Manager API (to store sensitive configurations)
-    *   Cloud Build API (for CI/CD automation)
-    *   IAM API (to manage permissions)
+*   **Google Cloud SDK (`gcloud` CLI):** Installed and authenticated.
+*   **GCP Project:** Created with billing enabled. Note your `PROJECT_ID`.
+*   **Docker:** Installed locally (for potential local image builds/tests).
+*   **Enabled APIs:**
+    *   Artifact Registry API
+    *   Cloud Run API
+    *   Secret Manager API
+    *   Cloud Build API
+    *   IAM API
+    *   Memorystore for Redis API (if using managed Redis)
 
 ## 3. Core GCP Services Overview
 
-*   **Artifact Registry:** Private Docker container registry for storing and managing application images built by Cloud Build or pushed manually.
-*   **Cloud Run:** Serverless platform to run the containerized FastAPI application. Handles auto-scaling (including to zero), HTTPS, and integrates with other GCP services.
+*   **Artifact Registry:** Stores application Docker images.
+*   **Cloud Run:** Serverless platform for the FastAPI web application (main service) and Celery workers (as separate Cloud Run services).
 *   **MongoDB Solution:**
-    *   **MongoDB Atlas on GCP (Recommended):** Managed MongoDB service via GCP Marketplace. Simplifies database operations.
-    *   **Self-managed on Compute Engine (Advanced):** More control, higher operational effort.
-*   **Secret Manager:** For secure storage of all sensitive data (database URIs, API keys, JWT secrets, Azure credentials).
-*   **Cloud Logging & Cloud Monitoring:** For centralized logging, metrics, and alerting.
-*   **Cloud Build:** To automate building Docker images from source (using `Dockerfile.prod`) and deploying to Cloud Run, as defined in `cloudbuild.yaml`.
-*   **IAM (Identity and Access Management):** To manage permissions for users and service accounts.
+    *   **MongoDB Atlas on GCP (Recommended):** Managed service.
+    *   **Self-managed on Compute Engine (Advanced).**
+*   **Memorystore for Redis (Recommended):** Managed Redis service for Celery broker and result backend. Alternatively, other Redis hosting options can be used.
+*   **Secret Manager:** Stores all sensitive configurations (DB URIs, API keys, JWT secrets, Azure credentials, Redis URL).
+*   **Cloud Logging & Cloud Monitoring:** For logs and metrics from Cloud Run services (web app and workers).
+*   **Cloud Build:** Automates Docker image builds and deployments via `cloudbuild.yaml`.
+*   **IAM:** Manages permissions.
 
 ## 4. Deployment Workflow
-
-This workflow emphasizes automation using Cloud Build and declarative configurations where possible.
 
 ### Step 4.1: Initial Setup & Configuration
 
 1.  **MongoDB Setup:**
-    *   Provision your chosen MongoDB solution (MongoDB Atlas on GCP is recommended).
-    *   Securely obtain the connection string. This will be stored as a secret.
+    *   Provision MongoDB (MongoDB Atlas recommended). Obtain the connection string.
 
-2.  **Secret Configuration in Secret Manager:**
-    *   Using the GCP Console or `gcloud` CLI (referencing `scripts/setup_gcp_secrets.sh` for examples), create secrets in Secret Manager for ALL environment variables that contain sensitive data. These secret names must match those referenced in `cloudbuild.yaml` and `gcp_configs/cloudrun/service.yaml`. Example secret names (from `cloudbuild.yaml` substitutions):
+2.  **Redis Setup (Memorystore for Redis):**
+    *   Enable the Memorystore for Redis API.
+    *   Create a Memorystore for Redis instance. Choose an appropriate tier and region.
+    *   Configure a VPC Network and Serverless VPC Access connector if your Redis instance is not publicly accessible and Cloud Run services need to connect to it via private IP. This is the recommended secure approach.
+    *   Note the Redis instance's IP address and port. Construct the `REDIS_URL` (e.g., `redis://<redis_ip>:<redis_port>/0`).
+
+3.  **Secret Configuration in Secret Manager:**
+    *   Create secrets for ALL sensitive environment variables. Names should align with those used in `cloudbuild.yaml` and Cloud Run service definitions.
+    *   **Key Secrets:**
         *   `MONGO_URI_ACTIVITY_LOGGER`
         *   `AUTH_MONGO_DB_NAME_ACTIVITY_LOGGER`
         *   `JWT_SECRET_KEY_ACTIVITY_LOGGER`
-        *   `AZURE_CLIENT_ID_ACTIVITY_LOGGER`
-        *   `AZURE_CLIENT_SECRET_ACTIVITY_LOGGER`
-        *   `AZURE_TENANT_ID_ACTIVITY_LOGGER`
-        *   `GRAPH_TARGET_USER_ID_ACTIVITY_LOGGER`
-        *   `ACCESS_TOKEN_EXPIRE_MINUTES_ACTIVITY_LOGGER` (if treated as a secret)
-        *   `GRAPH_MAIL_FOLDER_ACTIVITY_LOGGER` (if treated as a secret)
-    *   **Crucial:** The names used here (e.g., `MONGO_URI_ACTIVITY_LOGGER`) are the *names of the secrets in Secret Manager*. The `cloudbuild.yaml` and `service.yaml` will refer to these names.
+        *   `REDIS_URL_ACTIVITY_LOGGER` (for Celery broker/backend)
+        *   `ACCESS_TOKEN_EXPIRE_MINUTES_ACTIVITY_LOGGER`
+        *   Azure credentials (if Graph ingestion is used): `AZURE_CLIENT_ID_ACTIVITY_LOGGER`, etc.
+    *   Use `scripts/setup_gcp_secrets.sh` as a template, ensuring to add `REDIS_URL_ACTIVITY_LOGGER`.
 
-3.  **IAM Permissions (Summary):**
-    A summary of key roles needed:
-    *   **User performing initial setup/manual steps:**
-        *   Project Owner/Editor (for enabling APIs, creating resources broadly).
-        *   Secret Manager Admin (to create and manage secrets).
-        *   Artifact Registry Administrator (to create repositories).
-        *   Cloud Run Admin (to deploy services manually or set up initial service).
-        *   Cloud Build Editor (to trigger builds manually or set up triggers).
+4.  **IAM Permissions (Summary - Ensure comprehensive review):**
+    *   **User performing initial setup:** Project Owner/Editor, Secret Manager Admin, Artifact Registry Admin, Cloud Run Admin, Cloud Build Editor, Compute Network User (for VPC Access).
     *   **Cloud Build Service Account (`[PROJECT_NUMBER]@cloudbuild.gserviceaccount.com`):**
-        *   Artifact Registry Writer (to push images to Artifact Registry).
-        *   Cloud Run Admin (to deploy and manage Cloud Run services).
-        *   Secret Manager Secret Accessor (to access secrets during deployment for Cloud Run env vars).
-        *   Service Account User (on the Cloud Run runtime service account, if a non-default one is used).
-    *   **Cloud Run Runtime Service Account (either default Compute Engine SA or a dedicated one):**
-        *   Secret Manager Secret Accessor (to access the application's runtime secrets).
-        *   Cloud Logging Writer (for application logs).
-        *   Cloud Monitoring Metric Writer (for application metrics).
-        *   (Any other GCP services the application needs to interact with at runtime).
-    Grant these roles using the IAM page in the GCP Console.
+        *   Artifact Registry Writer
+        *   Cloud Run Admin
+        *   Secret Manager Secret Accessor
+        *   Service Account User (on Cloud Run runtime SA)
+        *   Compute Network User (if Cloud Build needs to interact with VPC for any reason)
+    *   **Cloud Run Runtime Service Account (for both Web App and Celery Worker services):**
+        *   Secret Manager Secret Accessor (for its own runtime secrets)
+        *   Cloud Logging Writer
+        *   Cloud Monitoring Metric Writer
+        *   Serverless VPC Access User (if using VPC connector for Redis/MongoDB)
+        *   (Any other GCP services the application/tasks need to access)
 
 ### Step 4.2: CI/CD Setup with Cloud Build
 
-This is the recommended approach for ongoing deployments.
+1.  **Artifact Registry Repository:** Ensure it's created (e.g., `app-images` in `us-central1`).
 
-1.  **Artifact Registry Repository:**
-    *   Create a Docker repository in Artifact Registry if you haven't already (see `scripts/setup_gcp_secrets.sh` for gcloud command example, or use Console).
-    *   Example: `gcloud artifacts repositories create app-images --repository-format=docker --location=us-central1` (match `_ARTIFACT_REGISTRY_REPO` and `_ARTIFACT_REGISTRY_REGION` in `cloudbuild.yaml`).
+2.  **`Dockerfile.prod`:** This is used for building both the web app and worker images (as they share the same codebase).
 
-2.  **Review `Dockerfile.prod`:**
-    *   This file is specifically designed for production builds (non-root user, no Uvicorn reload). It will be used by Cloud Build.
+3.  **`cloudbuild.yaml` Update for Celery Worker:**
+    *   The existing `cloudbuild.yaml` needs a second deployment step for the Celery worker service.
+    *   **Key changes for the worker deployment step:**
+        *   Different service name (e.g., `${_WORKER_SERVICE_NAME}` like `activity-logger-worker`).
+        *   Uses the **same image** built earlier.
+        *   **Command Override:** Crucially, override the container's default command to start the Celery worker:
+            ```yaml
+            # Inside the worker deployment step's 'args':
+            # For Cloud Run v1 API (used by gcloud run deploy by default for some time)
+            # - '--command=celery'
+            # - '--args=-A,src.task_queue.celery_app,worker,-l,INFO,-Q,celery,high_priority' # Example queues
+            # For Cloud Run v2 API (newer gcloud versions might default to this, or use --set-args)
+            # - '--set-args=celery,-A,src.task_queue.celery_app,worker,-l,INFO,-Q,celery'
+            # The exact syntax for command/args override depends on the gcloud version and API target.
+            # The example in cloudbuild.yaml uses:
+            # - '--command=celery'
+            # - '--args=-A,src.task_queue.celery_app,worker,-l,INFO'
+            ```
+            Ensure this matches the command syntax for your `gcloud` version.
+        *   **Networking:** Typically, worker services do not need to be publicly accessible (`--no-allow-unauthenticated`).
+        *   **Scaling:** Worker scaling might differ from the web app (e.g., `min-instances=1` if tasks need constant processing, or scale based on CPU/custom metrics related to queue length if possible).
+        *   Environment variables (from Secret Manager) will be largely the same as the web app, especially `REDIS_URL`, `MONGO_URI`.
+    *   Add new substitution variables to `cloudbuild.yaml` like `_WORKER_SERVICE_NAME`, `_REDIS_URL_SECRET_NAME`.
 
-3.  **Review and Customize `cloudbuild.yaml`:**
-    *   This file defines the build, push, and deploy steps.
-    *   Ensure substitution variables (like `_SERVICE_NAME`, `_ARTIFACT_REGISTRY_REGION`, `_ARTIFACT_REGISTRY_REPO`, `_CLOUD_RUN_REGION`, and all `_SECRET_NAME` variables) are correctly defined with defaults or are intended to be overridden in your Cloud Build trigger configuration.
-    *   The `cloudbuild.yaml` is configured to use `Dockerfile.prod`.
+4.  **Configure Cloud Build Trigger:** As previously described, connect to Git, use `cloudbuild.yaml`.
 
-4.  **Configure Cloud Build Trigger:**
-    *   Navigate to Cloud Build in the GCP Console.
-    *   Create a new trigger, connecting it to your Git repository.
-    *   Configure the trigger event (e.g., push to `main` branch).
-    *   Set the Build Configuration to use your `cloudbuild.yaml` file.
-    *   In the "Advanced" section -> "Substitution variables", define any values that need to override the defaults in `cloudbuild.yaml` (e.g., specific secret names if they differ from the defaults in `cloudbuild.yaml`). `PROJECT_ID` and `COMMIT_SHA` are typically available as built-in substitutions.
+### Step 4.3: Initial Deployment / Manual Deployment
 
-### Step 4.3: Initial Deployment / Manual Deployment (If not using full CI/CD trigger initially)
-
-1.  **Manual Image Build & Push (if not using Cloud Build for first time):**
-    *   Follow Step 4.3 in the previous "Deployment Steps Outline" (using `docker build -f Dockerfile.prod ...` and `docker push ...`).
-
-2.  **Declarative Service Deployment with `service.yaml`:**
-    *   Customize `gcp_configs/cloudrun/service.yaml`:
-        *   Replace ALL placeholders: `YOUR_PROJECT_ID`, `YOUR_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL` (if using a specific one, otherwise remove the line to use default), the full `image` URI from Artifact Registry (pointing to your pushed image, e.g., from the manual build or a Cloud Build run), and ensure secret names match those created in Secret Manager.
-    *   Deploy using `gcloud`:
+1.  **Manual Image Build & Push:** Use `Dockerfile.prod`.
+2.  **Declarative Service Deployment (using `service.yaml` files):**
+    *   **Web App Service:** Customize and use `gcp_configs/cloudrun/service.yaml` for the main FastAPI web application. Ensure all placeholders (project ID, image URI, secret names, runtime SA) are correct.
         ```bash
-        gcloud run services replace gcp_configs/cloudrun/service.yaml --region YOUR_CLOUD_RUN_REGION
-        # Example: gcloud run services replace gcp_configs/cloudrun/service.yaml --region us-central1
+        gcloud run services replace gcp_configs/cloudrun/service.yaml --region YOUR_WEB_APP_REGION
         ```
-    This command is useful for creating the service with all its configurations or for updating it declaratively.
+    *   **Celery Worker Service (`service-worker.yaml` - New File):**
+        Create a new file, e.g., `gcp_configs/cloudrun/service-worker.yaml`, by adapting `service.yaml`.
+        **Key differences for `service-worker.yaml`:**
+        *   `metadata.name`: Different service name (e.g., `activity-logger-worker`).
+        *   `spec.template.spec.containers[0].image`: Same image as the web app.
+        *   `spec.template.spec.containers[0].command`: `["celery"]`
+        *   `spec.template.spec.containers[0].args`: `["-A", "src.task_queue.celery_app", "worker", "-l", "INFO"]` (adjust queues as needed)
+        *   `spec.template.metadata.annotations` (scaling) might be different.
+        *   Ingress settings: Typically set to internal-only if workers don't need public URLs.
+        *   Environment variables (from secrets) will be similar to the web app service.
+        Deploy it:
+        ```bash
+        gcloud run services replace gcp_configs/cloudrun/service-worker.yaml --region YOUR_WORKER_REGION
+        ```
 
-3.  **Manual Cloud Build Trigger (using `scripts/trigger_cloud_build.sh`):**
-    *   If you want to test the Cloud Build pipeline manually or for one-off deployments:
-    *   Customize and run `scripts/trigger_cloud_build.sh` as described in its comments and the "Example Deployment Scripts" section below. This will use `cloudbuild.yaml` to build and deploy.
+3.  **Manual Cloud Build Trigger:** Use `scripts/trigger_cloud_build.sh` (ensure it's updated for any new substitutions like `_WORKER_SERVICE_NAME`).
 
 ### Step 4.4: Networking, Logging, and Monitoring
 
-*   Follow "Step 4.5: Configure Networking" and "Step 4.6: Set up Logging & Monitoring" from the previous general outline. These are standard Cloud Run practices.
+*   **Networking:**
+    *   Web App: Configure custom domain as needed.
+    *   Worker: Typically internal. Ensure it can reach MongoDB and Redis (via VPC Access Connector if they are on private IPs).
+*   **Logging:** Celery worker logs (stdout/stderr) will appear in Cloud Logging, filterable by the worker service name.
+*   **Monitoring:**
+    *   Monitor Cloud Run metrics for both web and worker services.
+    *   Monitor Redis (Memorystore) for queue length, memory usage, connections. This is crucial for understanding task backlog and worker performance.
+    *   Set up alerts for high queue lengths or high error rates in Celery tasks.
 
 ## 5. Example Deployment Scripts
-
-The `scripts/` directory contains helper scripts:
-
-*   **`scripts/setup_gcp_secrets.sh`:**
-    *   **Purpose:** Assists in creating the necessary secrets in Google Secret Manager.
-    *   **Usage:** Customize with your `PROJECT_ID` and actual secret values (do not commit real values). Run `chmod +x` and then execute. This script helps ensure your Secret Manager secrets match the names expected by `cloudbuild.yaml` and `service.yaml`.
-*   **`scripts/trigger_cloud_build.sh`:**
-    *   **Purpose:** Manually triggers a Cloud Build using `cloudbuild.yaml`.
-    *   **Usage:** Customize with your `PROJECT_ID` and any necessary substitution overrides. Run `chmod +x` and then execute from the project root.
-
-Review these scripts and their internal comments carefully before use.
+*   **`scripts/setup_gcp_secrets.sh`:** Update this script to include `REDIS_URL_ACTIVITY_LOGGER` (or your chosen secret name for `REDIS_URL`).
+*   **`scripts/trigger_cloud_build.sh`:** Ensure this script can pass or has defaults for new substitutions like `_WORKER_SERVICE_NAME` and secret names related to Redis.
 
 ## 6. Security Considerations
-
-*   **IAM & Least Privilege:** Strictly adhere to the principle of least privilege for all service accounts (Cloud Build SA, Cloud Run runtime SA) and users.
-*   **Secret Management:** All sensitive data MUST be stored in Secret Manager. Ensure secret names in your configurations (`cloudbuild.yaml`, `service.yaml`) accurately reference the created secrets.
-*   **Container Security:** Use `Dockerfile.prod` for production images. Regularly scan images for vulnerabilities.
-*   **API Security:** HTTPS is handled by Cloud Run. JWT authentication is implemented. Consider additional API security measures (rate limiting, WAF) if needed.
-*   **Network Security:** If not using Serverless VPC Access for MongoDB, ensure MongoDB Atlas IP whitelisting is configured correctly. Cloud Run default ingress is "all traffic".
+*   **Redis Security:** If using Memorystore, ensure "AUTH" (password) is enabled and store the auth string securely. Control access via VPC networks and the Serverless VPC Access connector.
+*   **Worker Service Security:** Cloud Run worker services should generally not have public ingress (`--no-allow-unauthenticated`).
+*   Other considerations as previously listed (IAM, Secret Management, Container Security, API Security).
 
 ## 7. Cost Considerations
+*   **Memorystore for Redis:** Pricing depends on instance size, tier, and network traffic.
+*   Factor in costs for potentially always-on Celery workers (`min-instances=1`) if needed for responsiveness, versus scale-to-zero for cost savings if queue processing can tolerate delays.
+*   Other costs as previously listed.
 
-*   Monitor costs via GCP Billing. Set up budget alerts.
-*   Cloud Run (scale-to-zero can be cost-effective), MongoDB Atlas (free tier available), Artifact Registry, Secret Manager, Cloud Build, Logging/Monitoring all have their own pricing models and potential free tiers.
-
-This revised plan emphasizes automation and best practices for deploying to GCP.
+This updated plan incorporates Celery and Redis into the GCP deployment, focusing on running workers as a separate, scalable Cloud Run service.
 ```
