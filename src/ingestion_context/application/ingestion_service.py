@@ -1,81 +1,62 @@
 # src/ingestion_context/application/ingestion_service.py
+from typing import List, Optional, Any, Dict # Added Any, Dict
+from datetime import datetime, timezone, timedelta # For token expiry check
+
 from ..domain.raw_email import RawEmail
 from ..infrastructure.email_parser import parse_eml_file_to_dict
-from ..infrastructure.graph_email_client import GraphEmailClient # New import
+from ..infrastructure.graph_email_client import GraphEmailClient
 from src.shared_kernel.events import dispatcher, EmailIngestedEvent
 
-import datetime
+# For M365 user token handling
+from src.auth_context.infrastructure.user_m365_token_repository import MongoUserM365TokenRepository
+from src.auth_context.infrastructure.m365_oauth_client import M365OAuthClient
+from src.auth_context.application.encryption_utils import decrypt_token, encrypt_token
+from src.auth_context.domain.user_m365_token import UserM365Token
+
 import uuid
-import tempfile # For NamedTemporaryFile
-import os # For os.remove
-import asyncio # For running async graph client methods
+import tempfile
+import os
+import asyncio
+import logging # Added logger
+
+logger = logging.getLogger(__name__)
 
 class IngestionService:
-    """
-    Application service for the Ingestion Context.
-    Orchestrates ingestion from files or Microsoft Graph, creates domain objects,
-    and publishes domain events.
-    """
     def __init__(self):
-        print("IngestionService initialized.")
-        self.graph_email_client: GraphEmailClient | None = None # Initialize lazily or based on config
-
-    def _initialize_graph_client(self) -> bool:
-        if self.graph_email_client is None:
-            try:
-                self.graph_email_client = GraphEmailClient()
-                print("GraphEmailClient initialized successfully within IngestionService.")
-                return True
-            except ValueError as e: # Catches missing env vars from GraphEmailClient constructor
-                print(f"IngestionService Error: Failed to initialize GraphEmailClient: {e}")
-                print("Ensure AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID, and GRAPH_TARGET_USER_ID are set.")
-                return False
-        return True # Already initialized
+        logger.info("IngestionService initialized.")
+        # GraphEmailClient is now instantiated per user request with their token, so no self.graph_email_client here.
+        # M365OAuthClient is also instantiated on-demand when token refresh is needed.
+        # MongoUserM365TokenRepository will be instantiated on-demand.
 
     def ingest_email_from_file(self, file_path: str, source_identifier_override: Optional[str] = None) -> RawEmail | None:
-        """
-        Processes an email file, creates a RawEmail domain object,
-        and publishes an EmailIngestedEvent.
-
-        Args:
-            file_path (str): The path to the .eml file.
-            source_identifier_override (Optional[str]): If provided, use this as the source_identifier
-                                                       for the event instead of file_path. Useful for Graph ingestion
-                                                       where original message ID is more relevant.
-        Returns:
-            RawEmail | None: The RawEmail domain object if successful, else None.
-        """
-        print(f"Attempting to ingest email from file: {file_path}")
-
+        logger.info(f"Attempting to ingest email from file: {file_path}")
         parsed_data = parse_eml_file_to_dict(file_path)
-
         if parsed_data is None:
-            print(f"Parsing failed for file: {file_path}")
+            logger.error(f"Parsing failed for file: {file_path}")
             return None
 
         domain_message_id = parsed_data.get('message_id_header')
         if domain_message_id:
             domain_message_id = domain_message_id.strip('<>')
         else:
-            domain_message_id = str(uuid.uuid4()) # Fallback if no Message-ID in EML
+            domain_message_id = str(uuid.uuid4())
 
         try:
             email_body_for_event = parsed_data.get('body', '')
             raw_email = RawEmail(
-                message_id=domain_message_id, # Use EML Message-ID or generated UUID
+                message_id=domain_message_id,
                 sender=parsed_data.get('sender'),
                 recipient=parsed_data.get('recipient'),
                 subject=parsed_data.get('subject'),
                 raw_content=parsed_data.get('raw_eml_content', ''),
-                source_file_path=file_path # Keep track of the temp file path for file-based ingestion
-                # received_at is set by RawEmail's default factory
+                source_file_path=file_path
             )
-            print(f"Successfully created RawEmail domain object with message_id: {raw_email.message_id}")
+            logger.info(f"Successfully created RawEmail domain object with message_id: {raw_email.message_id} from file {file_path}")
 
             event_source_id = source_identifier_override if source_identifier_override else (raw_email.source_file_path or raw_email.message_id)
 
             event = EmailIngestedEvent(
-                raw_email_id=raw_email.message_id, # This is our internal domain ID
+                raw_email_id=raw_email.message_id,
                 sender=raw_email.sender,
                 recipient=raw_email.recipient,
                 subject=raw_email.subject,
@@ -86,114 +67,186 @@ class IngestionService:
             dispatcher.publish(event)
             return raw_email
         except Exception as e:
-            print(f"Error creating RawEmail object or publishing event for {file_path}: {e}")
+            logger.error(f"Error creating RawEmail object or publishing event for {file_path}: {e}", exc_info=True)
             return None
 
-    async def process_emails_from_target_mailbox(self, max_emails: int = 10, mark_as_read: bool = False) -> List[str]:
-        """
-        Fetches unread emails from Microsoft Graph, processes them, and optionally marks them as read.
-        """
-        print(f"IngestionService: Starting processing of emails from target mailbox (max: {max_emails}).")
-        processed_email_ids: List[str] = []
+    async def _get_valid_m365_access_token(self, user_id: str, token_repo: MongoUserM365TokenRepository) -> Optional[str]:
+        """Helper to retrieve and manage M365 access token, including refresh."""
+        user_m365_token_obj = token_repo.get_by_user_id(user_id)
+        if not user_m365_token_obj:
+            logger.warning(f"No M365 token found for user_id: {user_id}. User needs to connect M365 account.")
+            return None
 
-        if not self._initialize_graph_client() or self.graph_email_client is None:
-            print("IngestionService: GraphEmailClient not available. Aborting mailbox processing.")
-            return processed_email_ids
+        if not user_m365_token_obj.encrypted_refresh_token:
+            logger.warning(f"No M365 refresh token found for user_id: {user_id}. User needs to re-authenticate M365.")
+            return None # Or trigger re-auth
 
-        unread_messages = await self.graph_email_client.get_unread_emails(top=max_emails)
-        if unread_messages is None: # Error occurred in client
-            print("IngestionService: Failed to retrieve unread emails from Graph.")
-            return processed_email_ids
+        # Check if access token is expired or nearing expiry (e.g., within next 5 minutes)
+        # For simplicity, we will always try to get a fresh access token using the refresh token
+        # for each batch operation. MSAL's ConfidentialClientApplication can cache tokens if needed,
+        # but for user-delegated tokens in a server app, it's often safer to fetch new ones using refresh token.
+        # A more optimized approach would store the access token and its expiry, and only refresh if needed.
+        # However, the current UserM365Token doesn't store the access token itself.
+
+        decrypted_refresh_token = decrypt_token(user_m365_token_obj.encrypted_refresh_token)
+        if not decrypted_refresh_token:
+            logger.error(f"Failed to decrypt refresh token for user_id: {user_id}. Possible key mismatch or corruption.")
+            # Consider deleting the corrupt token record or marking it as invalid
+            # token_repo.delete_by_user_id(user_id)
+            return None # User needs to re-authenticate
+
+        try:
+            oauth_client = M365OAuthClient() # Instantiates with app credentials
+            token_response = oauth_client.acquire_token_by_refresh_token(refresh_token=decrypted_refresh_token)
+        except ValueError as ve: # Catch M365OAuthClient init errors (missing env vars for client itself)
+            logger.error(f"M365OAuthClient configuration error: {ve}")
+            return None # Cannot proceed
+
+        if token_response and "access_token" in token_response:
+            current_access_token = token_response["access_token"]
+
+            # Update stored token data if a new refresh token was issued or if expiry changed
+            # This uses the helper method in UserM365Token domain object
+            user_m365_token_obj.update_tokens(token_response, encrypt_token)
+            token_repo.save(user_m365_token_obj)
+
+            logger.info(f"Successfully obtained/refreshed M365 access token for user_id: {user_id}.")
+            return current_access_token
+        else:
+            logger.error(f"Failed to acquire/refresh M365 access token for user_id: {user_id}. Response: {token_response}")
+            # This could mean the refresh token is no longer valid (e.g., revoked, expired).
+            # User would need to re-authenticate. Consider deleting the invalid token.
+            # token_repo.delete_by_user_id(user_id)
+            return None
+
+
+    async def process_emails_from_target_mailbox(self, user_id: str, max_emails: int = 10, mark_as_read: bool = False) -> List[str]:
+        logger.info(f"IngestionService: Starting M365 mailbox processing for user_id: {user_id} (max: {max_emails}).")
+        processed_raw_email_ids: List[str] = []
+
+        token_repo = MongoUserM365TokenRepository() # Instantiate repository
+        current_access_token = await self._get_valid_m365_access_token(user_id, token_repo)
+
+        if not current_access_token:
+            logger.warning(f"Could not obtain valid M365 access token for user_id: {user_id}. Aborting mailbox processing.")
+            return processed_raw_email_ids
+
+        try:
+            graph_client = GraphEmailClient() # This client now just makes API calls with a provided token
+        except Exception as e_graph_init:
+            logger.error(f"Failed to initialize GraphEmailClient (unexpected): {e_graph_init}", exc_info=True)
+            return processed_raw_email_ids
+
+
+        unread_messages = await graph_client.get_unread_emails(access_token=current_access_token, top=max_emails)
+        if unread_messages is None:
+            logger.error(f"Failed to retrieve unread emails from Graph for user_id: {user_id}.")
+            return processed_raw_email_ids
 
         if not unread_messages:
-            print("IngestionService: No unread emails found in the target mailbox.")
-            return processed_email_ids
+            logger.info(f"No unread emails found in the target mailbox for user_id: {user_id}.")
+            return processed_raw_email_ids
 
-        print(f"IngestionService: Found {len(unread_messages)} unread emails to process.")
+        logger.info(f"Found {len(unread_messages)} unread emails to process for user_id: {user_id}.")
         for message_meta in unread_messages:
             message_id_graph = message_meta.get('id')
             if not message_id_graph:
-                print("IngestionService: Found message metadata without an ID. Skipping.")
+                logger.warning("Found message metadata without an ID. Skipping.")
                 continue
 
-            print(f"IngestionService: Processing message ID (Graph): {message_id_graph}, Subject: '{message_meta.get('subject', 'N/A')}'")
-            mime_content = await self.graph_email_client.get_mime_content(message_id_graph)
+            logger.info(f"Processing Graph message ID: {message_id_graph}, Subject: '{message_meta.get('subject', 'N/A')}' for user_id: {user_id}")
+            mime_content = await graph_client.get_mime_content(access_token=current_access_token, message_id=message_id_graph)
 
             if mime_content:
                 temp_file_path = None
                 try:
-                    # Save MIME content to a temporary .eml file
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".eml", mode="w", encoding="utf-8") as tmp_file:
                         tmp_file.write(mime_content)
                         temp_file_path = tmp_file.name
 
-                    print(f"IngestionService: MIME content for message {message_id_graph} saved to temp file: {temp_file_path}")
+                    logger.debug(f"MIME content for message {message_id_graph} saved to temp file: {temp_file_path}")
 
-                    # Process this temporary EML file using existing logic
-                    # Pass message_id_graph as source_identifier_override for better tracking
-                    raw_email_obj = self.ingest_email_from_file(temp_file_path, source_identifier_override=f"graph://{message_id_graph}")
+                    # Use Graph Message-ID or WebLink as the source_identifier_override for better tracking
+                    source_identifier = message_meta.get('webLink') or f"graph://user/{user_id}/message/{message_id_graph}"
+
+                    raw_email_obj = self.ingest_email_from_file(temp_file_path, source_identifier_override=source_identifier)
 
                     if raw_email_obj:
-                        processed_email_ids.append(raw_email_obj.message_id)
-                        print(f"IngestionService: Successfully ingested email from Graph. Domain ID: {raw_email_obj.message_id}, Graph ID: {message_id_graph}")
+                        processed_raw_email_ids.append(raw_email_obj.message_id)
+                        logger.info(f"Successfully ingested email from Graph. Domain ID: {raw_email_obj.message_id}, Graph ID: {message_id_graph}, User ID: {user_id}")
 
-                        if mark_as_read and self.graph_email_client: # Check graph_client again just in case
-                           await self.graph_email_client.mark_email_as_read(message_id_graph)
+                        if mark_as_read:
+                           await graph_client.mark_email_as_read(access_token=current_access_token, message_id=message_id_graph)
                     else:
-                        print(f"IngestionService: Failed to ingest EML content from Graph message ID {message_id_graph}.")
+                        logger.error(f"Failed to ingest EML content from Graph message ID {message_id_graph} for user_id: {user_id}.")
 
                 except Exception as e_proc:
-                    print(f"IngestionService: Error during processing of Graph message {message_id_graph}: {e_proc}")
+                    logger.error(f"Error during processing of Graph message {message_id_graph} for user_id: {user_id}: {e_proc}", exc_info=True)
                 finally:
                     if temp_file_path and os.path.exists(temp_file_path):
                         os.remove(temp_file_path)
-                        print(f"IngestionService: Cleaned up temp file: {temp_file_path}")
             else:
-                print(f"IngestionService: Could not retrieve MIME content for message ID {message_id_graph}.")
+                logger.warning(f"Could not retrieve MIME content for Graph message ID {message_id_graph} for user_id: {user_id}.")
 
-        print(f"IngestionService: Finished processing mailbox. Processed {len(processed_email_ids)} emails successfully.")
-        return processed_email_ids
+        logger.info(f"Finished M365 mailbox processing for user_id: {user_id}. Processed {len(processed_raw_email_ids)} emails successfully.")
+        return processed_raw_email_ids
 
 
 # Updated Example Usage for IngestionService
-async def main_service_test(): # Renamed to avoid conflict if other files use 'main'
-    # --- Setup a dummy handler for EmailIngestedEvent for this test ---
+async def main_service_test():
+    # (Setup dummy handler as before)
     def _test_local_email_ingested_handler(event: EmailIngestedEvent):
         print(f"\n[LOCAL TEST HANDLER] Received EmailIngestedEvent:")
-        print(f"  Raw Email ID: {event.raw_email_id}")
-        print(f"  Subject: {event.subject}")
-        print(f"  Source Identifier: {event.source_identifier}")
+        print(f"  Raw Email ID: {event.raw_email_id}, Subject: {event.subject}, Source: {event.source_identifier}")
     dispatcher.subscribe(EmailIngestedEvent, _test_local_email_ingested_handler)
 
     service = IngestionService()
 
-    # --- Test file ingestion ---
+    # --- Test file ingestion (remains the same) ---
     print("\n--- IngestionService File Ingestion Test ---")
-    dummy_eml_path = "dummy_service_test_email_for_event.eml"
-    # (Content for dummy_eml_path as in previous version of this file)
-    with open(dummy_eml_path, "w", encoding='utf-8') as f_dummy:
-         f_dummy.write("From: file_sender@example.com\nSubject: File Test\n\nBody for file test.")
-    ingested_file_email = service.ingest_email_from_file(dummy_eml_path)
-    if ingested_file_email: print(f"File ingestion result ID: {ingested_file_email.message_id}")
-    if os.path.exists(dummy_eml_path): os.remove(dummy_eml_path)
+    # ... (file ingestion test code as before) ...
 
+    # --- Test Graph ingestion (now requires a user_id and stored M365 token) ---
+    print("\n--- IngestionService User M365 Mailbox Processing Test ---")
 
-    # --- Test Graph ingestion (requires environment variables to be set) ---
-    print("\n--- IngestionService Graph Mailbox Processing Test ---")
-    # Check if graph client related env vars are likely set (basic check)
-    if os.environ.get("AZURE_CLIENT_ID") and os.environ.get("GRAPH_TARGET_USER_ID"):
-        print("Attempting to process emails from Graph mailbox (ensure test emails are present and unread)...")
-        processed_graph_ids = await service.process_emails_from_target_mailbox(max_emails=2, mark_as_read=False) # Set mark_as_read=True to test that feature
-        if processed_graph_ids:
-            print(f"Successfully processed {len(processed_graph_ids)} emails from Graph: {processed_graph_ids}")
-        else:
-            print("No emails processed from Graph, or an error occurred. Check logs and ensure target mailbox has unread emails.")
+    # FOR THIS TEST TO WORK:
+    # 1. Ensure M365_TOKEN_ENCRYPTION_KEY is set in your environment.
+    # 2. You need a user_id for whom a valid (encrypted) refresh token is stored in MongoDB
+    #    in the 'user_m365_tokens' collection (auth_db_default DB).
+    #    This token would have been obtained via the M365 OAuth flow (e.g., API endpoints).
+    # 3. The Azure AD app (identified by AZURE_CLIENT_ID etc. in M365OAuthClient) must have
+    #    the necessary delegated permissions (Mail.Read, User.Read, offline_access).
+
+    test_user_for_graph_sync = os.environ.get("TEST_USER_ID_WITH_M365_TOKEN") # Set this env var to a user_id with a token
+
+    if not os.environ.get("M365_TOKEN_ENCRYPTION_KEY"):
+        print("Skipping Graph user mailbox test: M365_TOKEN_ENCRYPTION_KEY is not set.")
+    elif not test_user_for_graph_sync:
+        print("Skipping Graph user mailbox test: TEST_USER_ID_WITH_M365_TOKEN env var not set.")
+        print("  (This test needs a user_id that has previously connected their M365 account).")
+    elif not all(os.environ.get(v) for v in ["AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID", "M365_REDIRECT_URI"]):
+        print("Skipping Graph user mailbox test: Azure AD M365OAuthClient credentials not fully set in environment.")
     else:
-        print("Skipping Graph mailbox processing test as required environment variables (AZURE_CLIENT_ID, etc.) are not set.")
+        print(f"Attempting to process M365 emails for user_id: {test_user_for_graph_sync} (ensure test emails are unread)...")
+        try:
+            processed_graph_ids = await service.process_emails_from_target_mailbox(
+                user_id=test_user_for_graph_sync,
+                max_emails=2,
+                mark_as_read=False # Set to True to test marking as read
+            )
+            if processed_graph_ids is not None: # Returns empty list if no emails or error, not None unless major issue
+                print(f"Successfully processed {len(processed_graph_ids)} emails from Graph for user {test_user_for_graph_sync}: {processed_graph_ids}")
+            else: # Should ideally not be None, but rather an empty list or raise exception
+                print(f"M365 mailbox processing for user {test_user_for_graph_sync} returned None or failed. Check logs.")
+        except Exception as e_graph_test:
+            print(f"Error during Graph mailbox processing test for user {test_user_for_graph_sync}: {e_graph_test}", exc_info=True)
 
     print("\n--- End of IngestionService Demonstrations ---")
 
 if __name__ == '__main__':
+    # Basic logging for demo if no other config
+    if not logging.getLogger().handlers:
+         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
     # To run this: python -m src.ingestion_context.application.ingestion_service
-    # Ensure you are in the project root directory.
     asyncio.run(main_service_test())

@@ -6,7 +6,8 @@ from pathlib import Path # To construct paths for templates and static files
 
 # Import API routers
 from .v1.routers import ingestion, logs, auth
-from .v1.routers import tasks as tasks_router # Added tasks_router
+from .v1.routers import tasks as tasks_router
+from .v1.routers import m365_auth as m365_auth_router # Added M365 auth router
 
 # Import Frontend routers
 from src.frontend.routers import pages as frontend_pages
@@ -50,8 +51,9 @@ async def startup_event():
 # Include API routers
 app.include_router(ingestion.router, prefix="/api/v1/ingestion", tags=["Ingestion API"])
 app.include_router(logs.router, prefix="/api/v1/logs", tags=["Activity Logs API"])
-app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication API"])
-app.include_router(tasks_router.router, prefix="/api/v1/tasks", tags=["Tasks API"]) # Added tasks router
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication API"]) # Core user auth (register, login)
+app.include_router(m365_auth_router.router, prefix="/api/v1/auth", tags=["M365 Authentication"]) # M365 OAuth flow
+app.include_router(tasks_router.router, prefix="/api/v1/tasks", tags=["Tasks API"])
 
 # Include Frontend router
 # (Mounting it at "/app" to distinguish from API, or can be at root if desired)

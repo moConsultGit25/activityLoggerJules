@@ -95,13 +95,13 @@ async def queue_cloud_mailbox_sync_task( # Renamed for clarity
     """
     print(f"User '{current_user.username}' (ID: {current_user.id}) triggered cloud mailbox sync task queueing.")
     try:
-        # Dispatch the Celery task
+        # Dispatch the Celery task, now including current_user.id
         task = process_cloud_mailbox_task.apply_async(
-            args=[max_emails, mark_as_read]
+            args=[current_user.id, max_emails, mark_as_read]
             # Example: specify a queue: kwargs={'queue': 'cloud_sync'}
         )
 
-        print(f"Cloud mailbox sync task queued with ID: {task.id}")
+        print(f"Cloud mailbox sync task for user '{current_user.username}' (ID: {current_user.id}) queued with Celery task ID: {task.id}")
         return {
             "task_id": task.id,
             "status": "queued",

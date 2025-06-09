@@ -36,13 +36,13 @@ if not logger.handlers: # Avoid adding multiple handlers if module is reloaded
 
 
 @app.task(bind=True, name="ingestion.process_cloud_mailbox")
-def process_cloud_mailbox_task(self, max_emails: int = 10, mark_as_read: bool = False) -> Dict[str, Any]:
+def process_cloud_mailbox_task(self, user_id: str, max_emails: int = 10, mark_as_read: bool = False) -> Dict[str, Any]:
     """
-    Celery task to process unread emails from the configured cloud mailbox
-    via Microsoft Graph API.
+    Celery task to process unread emails from the specified user's cloud mailbox
+    via Microsoft Graph API, using their stored OAuth tokens.
     """
     task_id = self.request.id
-    logger.info(f"[Task ID: {task_id}] Starting process_cloud_mailbox_task: max_emails={max_emails}, mark_as_read={mark_as_read}")
+    logger.info(f"[Task ID: {task_id}] Starting process_cloud_mailbox_task for user_id: {user_id}, max_emails={max_emails}, mark_as_read={mark_as_read}")
 
     try:
         # Instantiate IngestionService here.
@@ -52,6 +52,7 @@ def process_cloud_mailbox_task(self, max_emails: int = 10, mark_as_read: bool = 
         # asyncio.run() is suitable for calling async code from a sync Celery task.
         processed_ids: List[str] = asyncio.run(
             ingestion_service.process_emails_from_target_mailbox(
+                user_id=user_id, # Pass user_id to the service method
                 max_emails=max_emails,
                 mark_as_read=mark_as_read
             )
@@ -60,7 +61,7 @@ def process_cloud_mailbox_task(self, max_emails: int = 10, mark_as_read: bool = 
         result = {
             "task_id": str(task_id),
             "status": "SUCCESS",
-            "message": f"Processed {len(processed_ids)} emails from cloud mailbox.",
+            "message": f"Processed {len(processed_ids)} emails from cloud mailbox for user_id: {user_id}.",
             "processed_count": len(processed_ids),
             "processed_ids": processed_ids
         }

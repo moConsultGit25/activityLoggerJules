@@ -27,3 +27,8 @@ class TokenData(BaseModel):
 # class PasswordChange(BaseModel):
 #     current_password: str
 #     new_password: str = Field(..., min_length=8)
+
+class M365ConnectionStatus(BaseModel):
+    is_connected: bool
+    account_email: Optional[str] = None # Email of the connected M365 account
+    error: Optional[str] = None # If there was an error checking status or token is invalid

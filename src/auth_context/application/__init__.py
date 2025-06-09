@@ -9,9 +9,11 @@ from .security import (
     ALGORITHM,
     ACCESS_TOKEN_EXPIRE_MINUTES
 )
+from .encryption_utils import encrypt_token, decrypt_token
 # AuthService will be added here later
 
 __all__ = [
+    # Security utils
     "hash_password",
     "verify_password",
     "create_access_token",
@@ -20,4 +22,7 @@ __all__ = [
     "JWT_SECRET_KEY",
     "ALGORITHM",
     "ACCESS_TOKEN_EXPIRE_MINUTES",
+    # Encryption utils
+    "encrypt_token",
+    "decrypt_token",
 ]

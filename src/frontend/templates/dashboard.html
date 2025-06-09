@@ -25,6 +25,33 @@
         </div>
     {% endif %}
 
+    <!-- Microsoft 365 Connection -->
+    <div class="card mb-4">
+        <div class="card-header">
+            Microsoft 365 Account Connection
+        </div>
+        <div class="card-body">
+            {% if m365_connection_status and m365_connection_status.is_connected %}
+                <p class="text-success"><strong>Status: Connected</strong></p>
+                {% if m365_connection_status.account_email %}
+                    <p>Connected Account: {{ m365_connection_status.account_email }}</p>
+                {% endif %}
+                <form method="post" action="{{ request.url_for('handle_m365_disconnect') }}">
+                    <button type="submit" class="btn btn-danger btn-sm">Disconnect M365 Account</button>
+                </form>
+            {% else %}
+                <p class="text-muted">Status: Not Connected</p>
+                <p>Connect your Microsoft 365 account to enable fetching emails directly from your mailbox.</p>
+                <a href="{{ request.url_for('initiate_m365_auth_frontend') }}" class="btn btn-success">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-microsoft" viewBox="0 0 16 16">
+                        <path d="M7.462 0H0v7.19h7.462V0zM16 0H8.538v7.19H16V0zM7.462 8.211H0V16h7.462V8.211zm8.538 0H8.538V16H16V8.211z"/>
+                    </svg>
+                    Connect Microsoft 365 Account
+                </a>
+            {% endif %}
+        </div>
+    </div>
+
     <!-- EML Upload Form -->
     <div class="card mb-4">
         <div class="card-header">
