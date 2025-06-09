@@ -1,0 +1,64 @@
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Create a non-root user and group for better security
+# -r: system user/group
+# -g: specify group
+# -d /app: set home directory (though not strictly used for nologin shell)
+# -s /sbin/nologin: prevent login
+# -c "App User": comment/description
+RUN groupadd -r appuser && useradd --no-create-home -r -g appuser -d /app -s /sbin/nologin -c "App User" appuser
+
+# Copy only necessary files for installing dependencies first to leverage Docker caching
+COPY requirements.txt .
+
+# Install any needed packages specified in requirements.txt
+# Using --no-cache-dir to reduce layer size and potential vulnerabilities from cache.
+# Consider adding --default-timeout=100 or other pip options if network is slow during builds.
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application code
+# Ensure .dockerignore is properly configured to avoid copying unnecessary files/folders.
+COPY ./src ./src
+# If data/sample_email.eml or other data files are needed at runtime by the application
+# (e.g., for default configurations or resources, not just for dev/testing),
+# then they should be copied as well. For now, assuming 'src' is self-contained for runtime needs.
+# COPY ./data ./data
+
+# Change ownership of the app directory and its contents to the non-root user
+# This should happen AFTER all files are copied and dependencies installed.
+RUN chown -R appuser:appuser /app
+
+# Switch to the non-root user for running the application
+USER appuser
+
+# Expose the port the app runs on (as defined in the CMD)
+EXPOSE 8000
+
+# Define environment variables (placeholders, to be set by the deployment environment like Cloud Run)
+# It's good practice to define all expected ENV VARS, even if empty, for clarity.
+ENV MONGO_URI=""
+ENV AUTH_MONGO_DB_NAME=""
+ENV JWT_SECRET_KEY="" # CRITICAL: Must be set in production environment
+ENV ACCESS_TOKEN_EXPIRE_MINUTES="30" # Default, can be overridden
+
+# Microsoft Graph API Credentials (only if feature is used)
+ENV AZURE_CLIENT_ID=""
+ENV AZURE_CLIENT_SECRET=""
+ENV AZURE_TENANT_ID=""
+ENV GRAPH_TARGET_USER_ID=""
+ENV GRAPH_MAIL_FOLDER="Inbox" # Default, can be overridden
+
+# Python specific environment variables
+ENV PYTHONUNBUFFERED=1 # Ensures print() statements are sent straight to logs
+ENV PYTHONPATH="/app"  # Ensures src directory is in Python path
+
+# Command to run the application using Uvicorn
+# No --reload flag for production.
+# Consider increasing --workers based on CPU cores available if Uvicorn is run directly without Gunicorn.
+# However, for Cloud Run, 1 worker is often fine as Cloud Run scales by instances.
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

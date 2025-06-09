@@ -2,225 +2,148 @@
 
 ## 1. Introduction
 
-This document outlines a plan for deploying the containerized "Automated Activity Logger" application to Google Cloud Platform (GCP). It assumes the application has been containerized using Docker and a `docker-compose.yml` is available for local development, as this informs the services and configurations needed.
+This document outlines a plan for deploying the containerized "Automated Activity Logger" application to Google Cloud Platform (GCP). It assumes the application has been containerized (as per `Dockerfile.prod`) and that `cloudbuild.yaml` and `gcp_configs/cloudrun/service.yaml` are available as starting points for CI/CD and declarative service configuration.
 
-The primary goal is to deploy a scalable, secure, and maintainable version of the application.
+The primary goal is to deploy a scalable, secure, and maintainable version of the application on GCP.
 
 ## 2. Prerequisites
 
-*   **Google Cloud SDK (`gcloud` CLI):** Installed and configured on your local machine. ([Installation Guide](https://cloud.google.com/sdk/docs/install))
+*   **Google Cloud SDK (`gcloud` CLI):** Installed and authenticated with appropriate permissions for your GCP project. ([Installation Guide](https://cloud.google.com/sdk/docs/install))
 *   **GCP Project:** A Google Cloud Project created with billing enabled. Note your `PROJECT_ID`.
-*   **Docker:** Docker installed locally for building and pushing container images.
-*   **Required APIs Enabled:** Ensure the following APIs are enabled in your GCP project:
-    *   Artifact Registry API
-    *   Cloud Run API
-    *   Secret Manager API
-    *   Cloud Build API (if using Cloud Build for CI/CD)
-    *   (Any other APIs specific to services you choose, e.g., Compute Engine if self-hosting MongoDB)
+*   **Docker:** Docker installed locally if you need to build and test images locally before pushing or using Cloud Build.
+*   **Enabled APIs:** Ensure the following APIs are enabled in your GCP project:
+    *   Artifact Registry API (to store Docker images)
+    *   Cloud Run API (to run the service)
+    *   Secret Manager API (to store sensitive configurations)
+    *   Cloud Build API (for CI/CD automation)
+    *   IAM API (to manage permissions)
 
-## 3. Core GCP Services to Use
+## 3. Core GCP Services Overview
 
-*   **Artifact Registry:** Private Docker container registry to store and manage your application images.
-*   **Cloud Run:** Serverless platform to run your stateless containerized FastAPI application. It scales automatically (including to zero) and simplifies deployment.
+*   **Artifact Registry:** Private Docker container registry for storing and managing application images built by Cloud Build or pushed manually.
+*   **Cloud Run:** Serverless platform to run the containerized FastAPI application. Handles auto-scaling (including to zero), HTTPS, and integrates with other GCP services.
 *   **MongoDB Solution:**
-    *   **MongoDB Atlas on GCP (Recommended):** A managed MongoDB service available via the GCP Marketplace. Simplifies database management, backups, and scaling.
-    *   **Self-managed on Compute Engine (Advanced):** Deploying MongoDB on a cluster of GCE virtual machines. Provides more control but significantly increases operational overhead.
-*   **Secret Manager:** Securely store and manage sensitive configuration data like API keys, database credentials, and JWT secrets.
-*   **Cloud Logging & Cloud Monitoring:** Integrated services for application logging, performance monitoring, and setting up alerts.
-*   **Cloud Build (Optional, for CI/CD):** Automate the process of building Docker images and deploying them to Cloud Run upon code changes.
-*   **Cloud DNS & Load Balancing (Optional):** For custom domain mapping, SSL certificate management (often handled by Cloud Run custom domains directly or by a dedicated Cloud Load Balancer for more complex setups).
+    *   **MongoDB Atlas on GCP (Recommended):** Managed MongoDB service via GCP Marketplace. Simplifies database operations.
+    *   **Self-managed on Compute Engine (Advanced):** More control, higher operational effort.
+*   **Secret Manager:** For secure storage of all sensitive data (database URIs, API keys, JWT secrets, Azure credentials).
+*   **Cloud Logging & Cloud Monitoring:** For centralized logging, metrics, and alerting.
+*   **Cloud Build:** To automate building Docker images from source (using `Dockerfile.prod`) and deploying to Cloud Run, as defined in `cloudbuild.yaml`.
+*   **IAM (Identity and Access Management):** To manage permissions for users and service accounts.
 
-## 4. Deployment Steps Outline
+## 4. Deployment Workflow
 
-### Step 4.1: Set up MongoDB
+This workflow emphasizes automation using Cloud Build and declarative configurations where possible.
 
-Choose one of the following options:
+### Step 4.1: Initial Setup & Configuration
 
-*   **Option A: MongoDB Atlas on GCP (Recommended)**
-    1.  Navigate to the GCP Marketplace and search for "MongoDB Atlas".
-    2.  Follow the instructions to create a new MongoDB Atlas cluster, choosing a region close to your Cloud Run services.
-    3.  Configure database users and access controls (e.g., IP Whitelisting to allow access from Cloud Run, or VPC Peering for more secure private networking).
-    4.  Obtain the MongoDB connection string (SRV record). This will be stored in Secret Manager.
+1.  **MongoDB Setup:**
+    *   Provision your chosen MongoDB solution (MongoDB Atlas on GCP is recommended).
+    *   Securely obtain the connection string. This will be stored as a secret.
 
-*   **Option B: Self-managed MongoDB on Google Compute Engine (Advanced)**
-    1.  Provision a set of GCE instances.
-    2.  Install and configure MongoDB, preferably as a replica set for high availability.
-    3.  Set up firewall rules to control access to your MongoDB instances.
-    4.  Securely note the connection string.
+2.  **Secret Configuration in Secret Manager:**
+    *   Using the GCP Console or `gcloud` CLI (referencing `scripts/setup_gcp_secrets.sh` for examples), create secrets in Secret Manager for ALL environment variables that contain sensitive data. These secret names must match those referenced in `cloudbuild.yaml` and `gcp_configs/cloudrun/service.yaml`. Example secret names (from `cloudbuild.yaml` substitutions):
+        *   `MONGO_URI_ACTIVITY_LOGGER`
+        *   `AUTH_MONGO_DB_NAME_ACTIVITY_LOGGER`
+        *   `JWT_SECRET_KEY_ACTIVITY_LOGGER`
+        *   `AZURE_CLIENT_ID_ACTIVITY_LOGGER`
+        *   `AZURE_CLIENT_SECRET_ACTIVITY_LOGGER`
+        *   `AZURE_TENANT_ID_ACTIVITY_LOGGER`
+        *   `GRAPH_TARGET_USER_ID_ACTIVITY_LOGGER`
+        *   `ACCESS_TOKEN_EXPIRE_MINUTES_ACTIVITY_LOGGER` (if treated as a secret)
+        *   `GRAPH_MAIL_FOLDER_ACTIVITY_LOGGER` (if treated as a secret)
+    *   **Crucial:** The names used here (e.g., `MONGO_URI_ACTIVITY_LOGGER`) are the *names of the secrets in Secret Manager*. The `cloudbuild.yaml` and `service.yaml` will refer to these names.
 
-### Step 4.2: Configure Secret Manager
+3.  **IAM Permissions (Summary):**
+    A summary of key roles needed:
+    *   **User performing initial setup/manual steps:**
+        *   Project Owner/Editor (for enabling APIs, creating resources broadly).
+        *   Secret Manager Admin (to create and manage secrets).
+        *   Artifact Registry Administrator (to create repositories).
+        *   Cloud Run Admin (to deploy services manually or set up initial service).
+        *   Cloud Build Editor (to trigger builds manually or set up triggers).
+    *   **Cloud Build Service Account (`[PROJECT_NUMBER]@cloudbuild.gserviceaccount.com`):**
+        *   Artifact Registry Writer (to push images to Artifact Registry).
+        *   Cloud Run Admin (to deploy and manage Cloud Run services).
+        *   Secret Manager Secret Accessor (to access secrets during deployment for Cloud Run env vars).
+        *   Service Account User (on the Cloud Run runtime service account, if a non-default one is used).
+    *   **Cloud Run Runtime Service Account (either default Compute Engine SA or a dedicated one):**
+        *   Secret Manager Secret Accessor (to access the application's runtime secrets).
+        *   Cloud Logging Writer (for application logs).
+        *   Cloud Monitoring Metric Writer (for application metrics).
+        *   (Any other GCP services the application needs to interact with at runtime).
+    Grant these roles using the IAM page in the GCP Console.
 
-1.  Navigate to Secret Manager in the GCP Console.
-2.  Create secrets for all sensitive environment variables required by your application. These include:
-    *   `MONGO_URI`: The MongoDB connection string obtained in Step 4.1.
-    *   `AUTH_MONGO_DB_NAME`: Name of the database for user authentication.
-    *   `JWT_SECRET_KEY`: A strong, randomly generated secret for signing JWTs.
-    *   `ACCESS_TOKEN_EXPIRE_MINUTES`: JWT expiration time.
-    *   `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`: For Microsoft Graph API integration (if used).
-    *   `GRAPH_TARGET_USER_ID`, `GRAPH_MAIL_FOLDER`: For Microsoft Graph API integration (if used).
-3.  For each secret, note its "Resource ID" (e.g., `projects/PROJECT_ID/secrets/SECRET_NAME/versions/latest`).
-4.  Grant the Cloud Run service's runtime service account the "Secret Manager Secret Accessor" IAM role for each secret it needs to access.
+### Step 4.2: CI/CD Setup with Cloud Build
 
-### Step 4.3: Build and Push Docker Image to Artifact Registry
+This is the recommended approach for ongoing deployments.
 
-1.  **Enable Artifact Registry API** in your GCP project.
-2.  **Create a Docker Repository:**
-    ```bash
-    gcloud artifacts repositories create REPO_NAME \
-        --repository-format=docker \
-        --location=REGION \
-        --description="Docker repository for Automated Activity Logger"
-    # Example: REGION=us-central1, REPO_NAME=activity-logger-repo
-    ```
-3.  **Configure Docker Authentication:**
-    ```bash
-    gcloud auth configure-docker REGION-docker.pkg.dev
-    # Example: gcloud auth configure-docker us-central1-docker.pkg.dev
-    ```
-4.  **Prepare Production Dockerfile:**
-    *   Ensure your `Dockerfile` is optimized for production:
-        *   Remove `--reload` from the Uvicorn `CMD`.
-        *   Consider using a non-root user within the container.
-        *   Multi-stage builds can reduce image size by separating build-time dependencies from runtime dependencies.
-        *   Ensure `EXPOSE 8000` (or your app's port) is present.
-        *   The `PYTHONPATH` and `PYTHONUNBUFFERED` environment variables are good practice.
-5.  **Build the Docker Image:**
-    ```bash
-    # Replace with your specific values
-    export REGION="us-central1" # Or your preferred region
-    export PROJECT_ID="your-gcp-project-id"
-    export REPO_NAME="activity-logger-repo"
-    export IMAGE_NAME="backend-service"
-    export IMAGE_TAG="latest" # Or a specific version tag, e.g., v1.0.0
+1.  **Artifact Registry Repository:**
+    *   Create a Docker repository in Artifact Registry if you haven't already (see `scripts/setup_gcp_secrets.sh` for gcloud command example, or use Console).
+    *   Example: `gcloud artifacts repositories create app-images --repository-format=docker --location=us-central1` (match `_ARTIFACT_REGISTRY_REPO` and `_ARTIFACT_REGISTRY_REGION` in `cloudbuild.yaml`).
 
-    docker build -t ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${IMAGE_NAME}:${IMAGE_TAG} .
-    ```
-6.  **Push the Docker Image:**
-    ```bash
-    docker push ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${IMAGE_NAME}:${IMAGE_TAG}
-    ```
+2.  **Review `Dockerfile.prod`:**
+    *   This file is specifically designed for production builds (non-root user, no Uvicorn reload). It will be used by Cloud Build.
 
-### Step 4.4: Deploy to Cloud Run
+3.  **Review and Customize `cloudbuild.yaml`:**
+    *   This file defines the build, push, and deploy steps.
+    *   Ensure substitution variables (like `_SERVICE_NAME`, `_ARTIFACT_REGISTRY_REGION`, `_ARTIFACT_REGISTRY_REPO`, `_CLOUD_RUN_REGION`, and all `_SECRET_NAME` variables) are correctly defined with defaults or are intended to be overridden in your Cloud Build trigger configuration.
+    *   The `cloudbuild.yaml` is configured to use `Dockerfile.prod`.
 
-1.  **Deploy the Container Image:**
-    ```bash
-    gcloud run deploy activity-logger-service \
-        --image=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${IMAGE_NAME}:${IMAGE_TAG} \
-        --platform=managed \
-        --region=${REGION} \
-        --allow-unauthenticated \ # Or --no-allow-unauthenticated for internal services / authenticated access via IAM or IAP
-        --port=8000 \
-        # --service-account=YOUR_SERVICE_ACCOUNT_EMAIL \ # Optional: if not using default Compute Engine SA
-        --set-env-vars="^##^MONGO_URI=secret:projects/${PROJECT_ID}/secrets/MONGO_URI/versions/latest##AUTH_MONGO_DB_NAME=secret:projects/${PROJECT_ID}/secrets/AUTH_MONGO_DB_NAME/versions/latest##JWT_SECRET_KEY=secret:projects/${PROJECT_ID}/secrets/JWT_SECRET_KEY/versions/latest##ACCESS_TOKEN_EXPIRE_MINUTES=secret:projects/${PROJECT_ID}/secrets/ACCESS_TOKEN_EXPIRE_MINUTES/versions/latest##AZURE_CLIENT_ID=secret:projects/${PROJECT_ID}/secrets/AZURE_CLIENT_ID/versions/latest##AZURE_CLIENT_SECRET=secret:projects/${PROJECT_ID}/secrets/AZURE_CLIENT_SECRET/versions/latest##AZURE_TENANT_ID=secret:projects/${PROJECT_ID}/secrets/AZURE_TENANT_ID/versions/latest##GRAPH_TARGET_USER_ID=secret:projects/${PROJECT_ID}/secrets/GRAPH_TARGET_USER_ID/versions/latest##GRAPH_MAIL_FOLDER=Inbox"
-    # Note on --set-env-vars: The format is "KEY1=value1##KEY2=value2".
-    # For secrets: "KEY=secret:projects/PROJECT_ID/secrets/SECRET_NAME/versions/VERSION"
-    # Replace SECRET_NAME and VERSION (often 'latest') as appropriate.
-    # Ensure the Cloud Run service account has permissions to access these secrets.
-    ```
-    *   Adjust `--allow-unauthenticated` based on your security requirements. If you want to protect the API with IAM or IAP, use `--no-allow-unauthenticated` and configure accordingly. API Gateway can also be used in front of Cloud Run.
-    *   The environment variables are directly injected from Secret Manager.
-2.  **Configure Cloud Run Service Settings (via Console or `gcloud` updates):**
-    *   **CPU & Memory:** Start with defaults and adjust based on performance monitoring.
-    *   **Concurrency:** Number of requests a single container instance can handle simultaneously.
-    *   **Min/Max Instances:** Configure auto-scaling parameters. `min-instances=0` allows scaling to zero.
-    *   **Service Account:** Ensure the runtime service account for Cloud Run has the "Secret Manager Secret Accessor" role for the secrets defined, plus "Cloud Logging Writer" and "Cloud Monitoring Metric Writer".
+4.  **Configure Cloud Build Trigger:**
+    *   Navigate to Cloud Build in the GCP Console.
+    *   Create a new trigger, connecting it to your Git repository.
+    *   Configure the trigger event (e.g., push to `main` branch).
+    *   Set the Build Configuration to use your `cloudbuild.yaml` file.
+    *   In the "Advanced" section -> "Substitution variables", define any values that need to override the defaults in `cloudbuild.yaml` (e.g., specific secret names if they differ from the defaults in `cloudbuild.yaml`). `PROJECT_ID` and `COMMIT_SHA` are typically available as built-in substitutions.
 
-### Step 4.5: Configure Networking (Custom Domain & SSL - Optional)
+### Step 4.3: Initial Deployment / Manual Deployment (If not using full CI/CD trigger initially)
 
-1.  If you have a custom domain:
-    *   Navigate to Cloud Run in the GCP Console, select your service.
-    *   Go to "Manage custom domains".
-    *   Add your domain mapping and follow the verification steps (usually involves updating DNS records).
-2.  Google automatically provisions and renews SSL certificates for custom domains mapped to Cloud Run.
+1.  **Manual Image Build & Push (if not using Cloud Build for first time):**
+    *   Follow Step 4.3 in the previous "Deployment Steps Outline" (using `docker build -f Dockerfile.prod ...` and `docker push ...`).
 
-### Step 4.6: Set up Logging & Monitoring
+2.  **Declarative Service Deployment with `service.yaml`:**
+    *   Customize `gcp_configs/cloudrun/service.yaml`:
+        *   Replace ALL placeholders: `YOUR_PROJECT_ID`, `YOUR_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL` (if using a specific one, otherwise remove the line to use default), the full `image` URI from Artifact Registry (pointing to your pushed image, e.g., from the manual build or a Cloud Build run), and ensure secret names match those created in Secret Manager.
+    *   Deploy using `gcloud`:
+        ```bash
+        gcloud run services replace gcp_configs/cloudrun/service.yaml --region YOUR_CLOUD_RUN_REGION
+        # Example: gcloud run services replace gcp_configs/cloudrun/service.yaml --region us-central1
+        ```
+    This command is useful for creating the service with all its configurations or for updating it declaratively.
 
-1.  **Cloud Logging:** Logs from `stdout` and `stderr` in your container (e.g., Python `print()` statements, Uvicorn access logs) are automatically collected and viewable in Cloud Logging.
-2.  **Cloud Monitoring:** Basic metrics (request count, latency, container CPU/memory) are automatically collected.
-3.  Create custom dashboards or alerts in Cloud Monitoring for key performance indicators or error rates.
+3.  **Manual Cloud Build Trigger (using `scripts/trigger_cloud_build.sh`):**
+    *   If you want to test the Cloud Build pipeline manually or for one-off deployments:
+    *   Customize and run `scripts/trigger_cloud_build.sh` as described in its comments and the "Example Deployment Scripts" section below. This will use `cloudbuild.yaml` to build and deploy.
 
-## 5. CI/CD Pipeline (Conceptual using Cloud Build)
+### Step 4.4: Networking, Logging, and Monitoring
 
-A CI/CD pipeline can automate the build and deployment process:
+*   Follow "Step 4.5: Configure Networking" and "Step 4.6: Set up Logging & Monitoring" from the previous general outline. These are standard Cloud Run practices.
 
-1.  **Source Repository:** Use a Git repository (e.g., GitHub, Cloud Source Repositories).
-2.  **Cloud Build Trigger:**
-    *   Create a trigger in Cloud Build that listens for changes (e.g., pushes to `main` branch or creation of tags).
-3.  **`cloudbuild.yaml` File (in your repository root):**
-    Define the build steps:
-    ```yaml
-    steps:
-    # Step 1: Build the Docker image
-    - name: 'gcr.io/cloud-builders/docker'
-      args:
-        - 'build'
-        - '-t'
-        - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:${COMMIT_SHA}' # Tag with commit SHA
-        - '.'
-      id: 'Build Docker Image'
+## 5. Example Deployment Scripts
 
-    # Step 2: Push the Docker image to Artifact Registry
-    - name: 'gcr.io/cloud-builders/docker'
-      args:
-        - 'push'
-        - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:${COMMIT_SHA}'
-      id: 'Push to Artifact Registry'
+The `scripts/` directory contains helper scripts:
 
-    # Step 3: Deploy to Cloud Run
-    - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-      entrypoint: gcloud
-      args:
-        - 'run'
-        - 'deploy'
-        - '${_SERVICE_NAME}' # Your Cloud Run service name
-        - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:${COMMIT_SHA}'
-        - '--region=${_REGION}'
-        - '--platform=managed'
-        - '--quiet' # Suppress interactive prompts
-        # Add other deployment flags like --set-env-vars, --service-account etc.
-        # These can also use substitutions from the trigger or _variables in cloudbuild.yaml
-      id: 'Deploy to Cloud Run'
+*   **`scripts/setup_gcp_secrets.sh`:**
+    *   **Purpose:** Assists in creating the necessary secrets in Google Secret Manager.
+    *   **Usage:** Customize with your `PROJECT_ID` and actual secret values (do not commit real values). Run `chmod +x` and then execute. This script helps ensure your Secret Manager secrets match the names expected by `cloudbuild.yaml` and `service.yaml`.
+*   **`scripts/trigger_cloud_build.sh`:**
+    *   **Purpose:** Manually triggers a Cloud Build using `cloudbuild.yaml`.
+    *   **Usage:** Customize with your `PROJECT_ID` and any necessary substitution overrides. Run `chmod +x` and then execute from the project root.
 
-    # Optional: Tag image with 'latest' or other tags
-    # - name: 'gcr.io/cloud-builders/docker'
-    #   args: ['tag', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:${COMMIT_SHA}', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:latest']
-    # - name: 'gcr.io/cloud-builders/docker'
-    #   args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:latest']
-
-    images:
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:${COMMIT_SHA}'
-      # - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_IMAGE_NAME}:latest' # If tagging latest
-
-    # Define substitutions (can also be set in the trigger configuration)
-    # _REGION: 'us-central1'
-    # _REPO_NAME: 'activity-logger-repo'
-    # _IMAGE_NAME: 'backend-service'
-    # _SERVICE_NAME: 'activity-logger-service'
-    ```
-    *   This `cloudbuild.yaml` uses substitutions (e.g., `_REGION`, `PROJECT_ID`, `COMMIT_SHA`). `COMMIT_SHA` is a built-in substitution. Others can be configured in the trigger.
+Review these scripts and their internal comments carefully before use.
 
 ## 6. Security Considerations
 
-*   **Regular Updates:** Keep the Python base image and all dependencies in `requirements.txt` updated to patch vulnerabilities.
-*   **Principle of Least Privilege:**
-    *   Assign minimal necessary IAM roles to service accounts (e.g., Cloud Run runtime service account).
-    *   Restrict access to Secret Manager secrets.
-*   **Firewall Rules:** Cloud Run manages ingress firewalling. If using Compute Engine for MongoDB, configure firewall rules strictly.
-*   **API Security:**
-    *   Use HTTPS (handled by Cloud Run).
-    *   Ensure robust authentication/authorization for API endpoints (JWT implementation is a good start).
-    *   Consider rate limiting, input validation (Pydantic helps here).
-*   **Secret Management:** Use Secret Manager for all sensitive data; do not hardcode secrets or commit them to version control.
+*   **IAM & Least Privilege:** Strictly adhere to the principle of least privilege for all service accounts (Cloud Build SA, Cloud Run runtime SA) and users.
+*   **Secret Management:** All sensitive data MUST be stored in Secret Manager. Ensure secret names in your configurations (`cloudbuild.yaml`, `service.yaml`) accurately reference the created secrets.
+*   **Container Security:** Use `Dockerfile.prod` for production images. Regularly scan images for vulnerabilities.
+*   **API Security:** HTTPS is handled by Cloud Run. JWT authentication is implemented. Consider additional API security measures (rate limiting, WAF) if needed.
+*   **Network Security:** If not using Serverless VPC Access for MongoDB, ensure MongoDB Atlas IP whitelisting is configured correctly. Cloud Run default ingress is "all traffic".
 
 ## 7. Cost Considerations
 
-*   **Cloud Run:** Priced based on vCPU-seconds, memory-seconds, number of requests, and outbound network traffic. Generous free tier usually available.
-*   **MongoDB Atlas:** Pricing depends on the chosen cluster tier, storage, and data transfer. Has a free tier for small projects.
-*   **Artifact Registry:** Priced based on storage and data transfer out.
-*   **Secret Manager:** Priced based on the number of active secret versions and access operations.
-*   **Cloud Logging/Monitoring:** Generous free tiers, costs can accrue for high-volume logging/metrics or extended retention.
-*   **Cloud Build:** Priced per build-minute, with a free tier.
-*   **Recommendation:** Set up budget alerts in GCP Billing to monitor and control costs. Use the GCP pricing calculator to estimate potential expenses.
+*   Monitor costs via GCP Billing. Set up budget alerts.
+*   Cloud Run (scale-to-zero can be cost-effective), MongoDB Atlas (free tier available), Artifact Registry, Secret Manager, Cloud Build, Logging/Monitoring all have their own pricing models and potential free tiers.
 
-This plan provides a comprehensive starting point. Specific configurations and choices will need to be adapted based on the application's exact requirements and scale.
+This revised plan emphasizes automation and best practices for deploying to GCP.
 ```

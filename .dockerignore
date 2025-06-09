@@ -46,6 +46,7 @@ credentials.json
 # .pytest_cache/
 # coverage.xml
 # htmlcov/
+tests/
 
 # Docker specific (if any layered builds or local docker files)
 # Dockerfile # Usually not ignored, but can be if building from a script that copies it

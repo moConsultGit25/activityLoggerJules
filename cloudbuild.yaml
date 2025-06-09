@@ -1,0 +1,107 @@
+# cloudbuild.yaml
+# This file defines the CI/CD pipeline for building the Docker image,
+# pushing it to Google Artifact Registry, and deploying it to Google Cloud Run.
+
+steps:
+  # 1. Build the production Docker image using Dockerfile.prod
+  # The image is tagged with the COMMIT_SHA for versioning and traceability.
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_ARTIFACT_REGISTRY_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}:${COMMIT_SHA}'
+      - '-f'
+      - 'Dockerfile.prod' # Explicitly use the production Dockerfile
+      - '.'
+    id: 'Build Docker Image'
+    # Allow up to 10 minutes for the build step
+    timeout: 600s
+
+  # 2. Push the Docker image to Google Artifact Registry
+  # This step requires the Cloud Build service account to have "Artifact Registry Writer" role.
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_ARTIFACT_REGISTRY_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}:${COMMIT_SHA}'
+    id: 'Push to Artifact Registry'
+
+  # 3. Deploy the new image to Google Cloud Run
+  # This step requires the Cloud Build service account to have "Cloud Run Admin" role
+  # and "Service Account User" role on the Cloud Run runtime service account (if specified).
+  # It also needs "Secret Manager Secret Accessor" role for the secrets being referenced.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}' # Name of the Cloud Run service to update/create
+      - '--image=${_ARTIFACT_REGISTRY_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}:${COMMIT_SHA}'
+      - '--region=${_CLOUD_RUN_REGION}'
+      - '--platform=managed' # Specify managed platform (as opposed to GKE-based)
+      - '--quiet'            # Suppress interactive prompts during deployment
+      # Allow unauthenticated access to the service. Change if IAM or IAP based auth is needed.
+      - '--allow-unauthenticated'
+      # Define environment variables, sourcing sensitive ones from Secret Manager
+      # Format: VARIABLE_NAME=secret:projects/PROJECT_ID/secrets/SECRET_NAME:SECRET_VERSION (VERSION is often 'latest')
+      # Ensure these secrets exist in Secret Manager in your GCP project.
+      - '--update-secrets=MONGO_URI=projects/${PROJECT_ID}/secrets/${_MONGO_URI_SECRET_NAME}:latest'
+      - '--update-secrets=AUTH_MONGO_DB_NAME=projects/${PROJECT_ID}/secrets/${_AUTH_DB_NAME_SECRET_NAME}:latest'
+      - '--update-secrets=JWT_SECRET_KEY=projects/${PROJECT_ID}/secrets/${_JWT_SECRET_KEY_SECRET_NAME}:latest'
+      - '--update-secrets=AZURE_CLIENT_ID=projects/${PROJECT_ID}/secrets/${_AZURE_CLIENT_ID_SECRET_NAME}:latest'
+      - '--update-secrets=AZURE_CLIENT_SECRET=projects/${PROJECT_ID}/secrets/${_AZURE_CLIENT_SECRET_SECRET_NAME}:latest'
+      - '--update-secrets=AZURE_TENANT_ID=projects/${PROJECT_ID}/secrets/${_AZURE_TENANT_ID_SECRET_NAME}:latest'
+      - '--update-secrets=GRAPH_TARGET_USER_ID=projects/${PROJECT_ID}/secrets/${_GRAPH_TARGET_USER_ID_SECRET_NAME}:latest'
+      # For variables that are not secret or have defaults, you can set them directly or via Secret Manager as well.
+      # For example, if GRAPH_MAIL_FOLDER is not sensitive and usually 'Inbox':
+      - '--set-env-vars=GRAPH_MAIL_FOLDER=${_GRAPH_MAIL_FOLDER_VALUE}'
+      # Similarly for ACCESS_TOKEN_EXPIRE_MINUTES:
+      - '--set-env-vars=ACCESS_TOKEN_EXPIRE_MINUTES=${_ACCESS_TOKEN_EXPIRE_MINUTES_VALUE}'
+      # Note: PYTHONUNBUFFERED and PYTHONPATH are set in Dockerfile.prod, so not repeated here unless override is needed.
+      # Other Cloud Run configurations (CPU, memory, instances, service account) can also be set here.
+      # Example:
+      # - '--cpu=1'
+      # - '--memory=512Mi'
+      # - '--min-instances=0' # Allows scaling to zero for cost-effectiveness
+      # - '--max-instances=3' # Controls maximum scaling
+      # - '--concurrency=80'  # Requests per container instance
+      # If using a specific service account for Cloud Run (recommended for least privilege):
+      # - '--service-account=${_CLOUD_RUN_SERVICE_ACCOUNT_EMAIL}'
+    id: 'Deploy to Cloud Run'
+
+# Define images that this build will produce and push.
+# This is mainly for traceability within Cloud Build.
+images:
+  - '${_ARTIFACT_REGISTRY_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}:${COMMIT_SHA}'
+
+# Define substitutions (variables). These can be overridden at build time (e.g., in a trigger or via gcloud builds submit).
+# Default values are provided as examples.
+substitutions:
+  _SERVICE_NAME: 'activity-logger-service' # Your Cloud Run service name
+  _ARTIFACT_REGISTRY_REGION: 'us-central1'   # GCP region for Artifact Registry
+  _ARTIFACT_REGISTRY_REPO: 'app-images'      # Your Artifact Registry repository name
+  _CLOUD_RUN_REGION: 'us-central1'           # GCP region for Cloud Run service
+
+  # Names of the secrets in Google Secret Manager (these are NOT the secret values themselves)
+  _MONGO_URI_SECRET_NAME: 'MONGO_URI_ACTIVITY_LOGGER' # Example: make secret names specific
+  _AUTH_DB_NAME_SECRET_NAME: 'AUTH_MONGO_DB_NAME_ACTIVITY_LOGGER'
+  _JWT_SECRET_KEY_SECRET_NAME: 'JWT_SECRET_KEY_ACTIVITY_LOGGER'
+  _AZURE_CLIENT_ID_SECRET_NAME: 'AZURE_CLIENT_ID_ACTIVITY_LOGGER'
+  _AZURE_CLIENT_SECRET_SECRET_NAME: 'AZURE_CLIENT_SECRET_ACTIVITY_LOGGER'
+  _AZURE_TENANT_ID_SECRET_NAME: 'AZURE_TENANT_ID_ACTIVITY_LOGGER'
+  _GRAPH_TARGET_USER_ID_SECRET_NAME: 'GRAPH_TARGET_USER_ID_ACTIVITY_LOGGER'
+
+  # For non-secret env vars or those with simple defaults, can pass directly or use a secret as well
+  _GRAPH_MAIL_FOLDER_VALUE: 'Inbox'
+  _ACCESS_TOKEN_EXPIRE_MINUTES_VALUE: '30'
+
+  # Optional: Service account for Cloud Run (if not using the default Compute Engine SA)
+  # _CLOUD_RUN_SERVICE_ACCOUNT_EMAIL: 'your-cloud-run-sa@${PROJECT_ID}.iam.gserviceaccount.com'
+
+# Optional: Specify timeout for the entire build
+timeout: '1200s' # 20 minutes (e.g., 600s for build, 600s for deploy)
+
+# Optional: Specify machine type for the build (if default is not sufficient)
+# options:
+#   machineType: 'N1_HIGHCPU_8' # Example: 8 vCPUs
+#   logging: CLOUD_LOGGING_ONLY # Default is CLOUD_LOGGING_ONLY. Other option: LEGACY (Stackdriver)
+```
