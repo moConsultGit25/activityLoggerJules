@@ -95,7 +95,7 @@ cd <repository_name>
 ```
 
 ### 2. Environment Variables
-Create a `.env` file in the project root (from `.env.example` if provided, or manually). `docker-compose.yml` loads this.
+Create a `.env` file in the project root.
 
 **Key Environment Variables (see `.env.example` or `AZURE_AD_OAUTH_SETUP.md` for full list):**
 ```env
@@ -157,6 +157,26 @@ STATE_SERIALIZER_SECRET_KEY="!! YOUR_STRONG_SECRET_KEY_FOR_OAUTH_STATE !!" # Can
     *   **Activity Logs:**
         *   `GET /api/v1/logs/`: Retrieve paginated activity logs. Requires JWT auth.
 *   **CLI for local EML processing:** `python src.main:main --email-file data/sample_email.eml`.
+
+### Microsoft 365 Connection Issues
+
+If you find that your Microsoft 365 account is no longer syncing emails, or if the dashboard unexpectedly shows "Status: Not Connected" after you previously connected it, your authorization tokens stored by this application may have become invalid. This can happen for several reasons, such as:
+*   The refresh token expired (though they are typically long-lived).
+*   The refresh token was revoked by Microsoft (e.g., due to a password change, security event, or explicit user revocation of app permissions in their Microsoft account settings).
+*   The `M365_TOKEN_ENCRYPTION_KEY` used by the application was changed, making previously stored tokens undecryptable.
+
+Our application automatically detects these invalid token scenarios. For your security and to ensure proper functionality, if an invalid M365 refresh token is detected (e.g., during an attempt to refresh your access or fetch emails), the application will remove the old, invalid token information from its database.
+
+**To resolve this, you will need to re-authorize the application:**
+
+1.  Navigate to the **Dashboard** in the application (usually found at `/app/dashboard` when running locally).
+2.  In the "Microsoft 365 Account Connection" section:
+    *   If you see a "Disconnect M365 Account" button, it's good practice to click this first to ensure any remnants of the old connection are cleared from our application's database.
+    *   Then, click the **"Connect Microsoft 365 Account"** button.
+3.  You will be redirected to Microsoft to sign in and re-authorize the application to access your mailbox for reading emails.
+4.  After successful authorization, you should be redirected back to the dashboard, and the status should show as "Connected".
+
+This process will provide the application with new, valid tokens to access your M365 mailbox on your behalf.
 
 ## Running Tests
 (Remains the same)

@@ -1,109 +1,160 @@
 # tests/auth_context/application/test_encryption_utils.py
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import os
+import importlib # For reloading the module to re-evaluate ENV VARS
 from cryptography.fernet import Fernet, InvalidToken
 
-# Import functions to test
-# Need to be careful if _fernet_instance is already initialized at import time based on env var
-# We might need to reload the module or patch os.environ *before* module import for some tests.
-# For simplicity, we'll patch os.environ and assume functions will re-check or use the patched value.
-# A better way for testing is to make _fernet_instance injectable or part of a class.
-
-# Forcing a reload for testing different ENCRYPTION_KEY states:
-import importlib
+# Import the module to be tested
 from src.auth_context.application import encryption_utils
 
 class TestEncryptionUtils(unittest.TestCase):
 
+    def generate_valid_key(self) -> str:
+        return Fernet.generate_key().decode()
+
     def setUp(self):
-        # Ensure each test can set its own environment for ENCRYPTION_KEY
-        self.original_env_var = os.environ.get("M365_TOKEN_ENCRYPTION_KEY")
+        # Store original env var, if exists, to restore it later
+        self.original_env_key = os.environ.get("M365_TOKEN_ENCRYPTION_KEY")
 
     def tearDown(self):
-        # Restore original environment variable state
-        if self.original_env_var is None:
-            if "M365_TOKEN_ENCRYPTION_KEY" in os.environ:
-                del os.environ["M365_TOKEN_ENCRYPTION_KEY"]
-        else:
-            os.environ["M365_TOKEN_ENCRYPTION_KEY"] = self.original_env_var
-        importlib.reload(encryption_utils) # Important to reload to re-evaluate _fernet_instance
+        # Restore original environment variable to avoid side-effects between tests
+        if self.original_env_key is not None:
+            os.environ["M365_TOKEN_ENCRYPTION_KEY"] = self.original_env_key
+        elif "M365_TOKEN_ENCRYPTION_KEY" in os.environ:
+            del os.environ["M365_TOKEN_ENCRYPTION_KEY"]
+        # Reload module to reflect original env var state for subsequent tests (if any in same suite run)
+        importlib.reload(encryption_utils)
 
-    @patch.dict(os.environ, {"M365_TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode()})
+
+    @patch.dict(os.environ, {}, clear=True) # Start with a clean environment for this test
+    def test_no_encryption_key_set(self):
+        # Ensure key is not present from a previous test's patch or actual env
+        if "M365_TOKEN_ENCRYPTION_KEY" in os.environ:
+            del os.environ["M365_TOKEN_ENCRYPTION_KEY"]
+        importlib.reload(encryption_utils) # Reload to pick up absent os.environ
+
+        with patch.object(encryption_utils.logger, 'warning') as mock_warning:
+            token_to_encrypt = "mysecrettoken"
+
+            encrypted = encryption_utils.encrypt_token(token_to_encrypt)
+            self.assertEqual(encrypted, token_to_encrypt)
+            mock_warning.assert_any_call("Encryption key not available or invalid; returning token in plaintext (INSECURE).")
+
+            decrypted = encryption_utils.decrypt_token(encrypted)
+            self.assertEqual(decrypted, token_to_encrypt)
+            mock_warning.assert_any_call("Encryption key not available or invalid; assuming token is plaintext (INSECURE).")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_invalid_encryption_key_format(self):
+        os.environ["M365_TOKEN_ENCRYPTION_KEY"] = "invalid-key-not-base64-and-not-32-bytes"
+        # Use with block to ensure logger is patched only during this test's reload and calls
+        with patch.object(encryption_utils.logger, 'error') as mock_error, \
+             patch.object(encryption_utils.logger, 'warning') as mock_warning:
+            importlib.reload(encryption_utils)
+
+            mock_error.assert_any_call("Invalid M365_TOKEN_ENCRYPTION_KEY: Fernet key must be 32 url-safe base64-encoded bytes. Refresh token encryption/decryption will not work.")
+
+            token_to_encrypt = "mysecrettoken"
+            encrypted = encryption_utils.encrypt_token(token_to_encrypt)
+            self.assertEqual(encrypted, token_to_encrypt)
+            mock_warning.assert_any_call("Encryption key not available or invalid; returning token in plaintext (INSECURE).")
+
+            decrypted = encryption_utils.decrypt_token(encrypted)
+            self.assertEqual(decrypted, token_to_encrypt)
+            mock_warning.assert_any_call("Encryption key not available or invalid; assuming token is plaintext (INSECURE).")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_encrypt_decrypt_success(self):
-        importlib.reload(encryption_utils) # Reload to pick up patched env var
-        original_token = "my_very_secret_token_data_!@#$%^&*()"
-        encrypted = encryption_utils.encrypt_token(original_token)
-        self.assertIsNotNone(encrypted)
-        self.assertNotEqual(encrypted, original_token)
-
-        decrypted = encryption_utils.decrypt_token(encrypted)
-        self.assertEqual(decrypted, original_token)
-
-    @patch.dict(os.environ, {"M365_TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode()})
-    def test_decrypt_invalid_token_returns_none(self):
-        importlib.reload(encryption_utils)
-        invalid_encrypted_token = "gAAAAAB_this_is_not_a_valid_fernet_token_for_sure"
-        decrypted = encryption_utils.decrypt_token(invalid_encrypted_token)
-        self.assertIsNone(decrypted, "Decrypting an invalid token should return None or raise InvalidToken (handled as None here)")
-
-    @patch.dict(os.environ, {}, clear=True) # Ensure M365_TOKEN_ENCRYPTION_KEY is not set
-    def test_encrypt_no_key_returns_plaintext(self):
-        # Must remove the key from environ if it was set by a previous test or system wide
-        if "M365_TOKEN_ENCRYPTION_KEY" in os.environ:
-            del os.environ["M365_TOKEN_ENCRYPTION_KEY"]
-        importlib.reload(encryption_utils) # Reload to ensure _fernet_instance is None
-
-        original_token = "plaintext_token_due_to_no_key"
-        with self.assertLogs(encryption_utils.logger, level='WARNING') as log_watcher:
-            encrypted = encryption_utils.encrypt_token(original_token)
-            self.assertIn("Encryption key not available or invalid; returning token in plaintext (INSECURE).", log_watcher.output[0])
-
-        self.assertEqual(encrypted, original_token, "Token should be plaintext if key is missing")
-
-
-    @patch.dict(os.environ, {}, clear=True) # Ensure M365_TOKEN_ENCRYPTION_KEY is not set
-    def test_decrypt_no_key_returns_plaintext(self):
-        if "M365_TOKEN_ENCRYPTION_KEY" in os.environ:
-            del os.environ["M365_TOKEN_ENCRYPTION_KEY"]
+        valid_key = self.generate_valid_key()
+        os.environ["M365_TOKEN_ENCRYPTION_KEY"] = valid_key
         importlib.reload(encryption_utils)
 
-        encrypted_looking_token = "this_looks_encrypted_but_will_be_treated_as_plaintext"
-        with self.assertLogs(encryption_utils.logger, level='WARNING') as log_watcher:
-            decrypted = encryption_utils.decrypt_token(encrypted_looking_token)
-            self.assertIn("Encryption key not available or invalid; assuming token is plaintext (INSECURE).", log_watcher.output[0])
+        original_token = "mysupersecrettoken123!@#$%^&*()_+"
+        encrypted_token = encryption_utils.encrypt_token(original_token)
 
-        self.assertEqual(decrypted, encrypted_looking_token, "Token should be returned as is if key is missing")
+        self.assertIsNotNone(encrypted_token)
+        self.assertNotEqual(encrypted_token, original_token)
 
-    @patch.dict(os.environ, {"M365_TOKEN_ENCRYPTION_KEY": "this_is_not_a_valid_fernet_key"})
-    def test_init_with_invalid_key_format(self):
-        # This test checks the behavior at module load time (or reload)
-        with self.assertLogs(encryption_utils.logger, level='ERROR') as log_watcher:
-            importlib.reload(encryption_utils) # Attempt to reload with the bad key
-            # _fernet_instance should be None after this
-            self.assertIn("Invalid M365_TOKEN_ENCRYPTION_KEY", log_watcher.output[0])
+        decrypted_token = encryption_utils.decrypt_token(encrypted_token)
+        self.assertEqual(decrypted_token, original_token)
 
-        self.assertIsNone(encryption_utils._fernet_instance, "_fernet should be None if key is invalid")
-        # Subsequent calls should behave as if no key is set
-        original_token = "test"
-        self.assertEqual(encryption_utils.encrypt_token(original_token), original_token)
-        self.assertEqual(encryption_utils.decrypt_token(original_token), original_token)
+    @patch.dict(os.environ, {}, clear=True)
+    def test_decrypt_invalid_or_tampered_token(self):
+        valid_key = self.generate_valid_key()
+        os.environ["M365_TOKEN_ENCRYPTION_KEY"] = valid_key
+        importlib.reload(encryption_utils)
 
+        tampered_token = "gAAAAABf...thisisnotavalidfernettokenforsure..." # Example of what a Fernet token might look like
+        with patch.object(encryption_utils.logger, 'error') as mock_error:
+            decrypted = encryption_utils.decrypt_token(tampered_token)
+            self.assertIsNone(decrypted)
+            mock_error.assert_any_call(
+                "Failed to decrypt token: Invalid token. This can happen if the token was not "
+                "encrypted, encrypted with a different key, or has been tampered with."
+            )
 
-    @patch.dict(os.environ, {"M365_TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode()})
+        # Test with a token encrypted by a different key
+        another_valid_key = self.generate_valid_key()
+        # Temporarily use another Fernet instance for encryption with a different key
+        another_fernet = Fernet(another_valid_key.encode())
+        encrypted_with_another_key = another_fernet.encrypt("some data".encode()).decode()
+
+        # Decryption attempt with the original key loaded in encryption_utils._fernet_instance
+        with patch.object(encryption_utils.logger, 'error') as mock_error:
+            decrypted_wrong_key = encryption_utils.decrypt_token(encrypted_with_another_key)
+            self.assertIsNone(decrypted_wrong_key)
+            mock_error.assert_any_call(
+                 "Failed to decrypt token: Invalid token. This can happen if the token was not "
+                 "encrypted, encrypted with a different key, or has been tampered with."
+            )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_encrypt_empty_or_none(self):
+        valid_key = self.generate_valid_key()
+        os.environ["M365_TOKEN_ENCRYPTION_KEY"] = valid_key
         importlib.reload(encryption_utils)
+
         self.assertEqual(encryption_utils.encrypt_token(""), "")
         self.assertIsNone(encryption_utils.encrypt_token(None))
 
-    @patch.dict(os.environ, {"M365_TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode()})
+    @patch.dict(os.environ, {}, clear=True)
     def test_decrypt_empty_or_none(self):
+        valid_key = self.generate_valid_key()
+        os.environ["M365_TOKEN_ENCRYPTION_KEY"] = valid_key
         importlib.reload(encryption_utils)
+
         self.assertEqual(encryption_utils.decrypt_token(""), "")
         self.assertIsNone(encryption_utils.decrypt_token(None))
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_encrypt_internal_failure(self):
+        valid_key = self.generate_valid_key()
+        os.environ["M365_TOKEN_ENCRYPTION_KEY"] = valid_key
+        importlib.reload(encryption_utils)
+
+        with patch.object(encryption_utils._fernet_instance, 'encrypt', side_effect=Exception("Simulated encryption error")), \
+             patch.object(encryption_utils.logger, 'error') as mock_logger_error:
+            result = encryption_utils.encrypt_token("testtoken")
+            self.assertIsNone(result)
+            mock_logger_error.assert_called_once_with("Error encrypting token: Simulated encryption error", exc_info=True)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_decrypt_internal_failure(self):
+        valid_key = self.generate_valid_key()
+        os.environ["M365_TOKEN_ENCRYPTION_KEY"] = valid_key
+        importlib.reload(encryption_utils)
+
+        # Need a valid encrypted token to pass the initial checks before mock is hit
+        valid_encrypted_token = encryption_utils.encrypt_token("data_to_be_decrypted")
+        self.assertIsNotNone(valid_encrypted_token)
+
+        with patch.object(encryption_utils._fernet_instance, 'decrypt', side_effect=Exception("Simulated decryption error")), \
+             patch.object(encryption_utils.logger, 'error') as mock_logger_error:
+            result = encryption_utils.decrypt_token(valid_encrypted_token)
+            self.assertIsNone(result)
+            mock_logger_error.assert_called_once_with("Error decrypting token: Simulated decryption error", exc_info=True)
+
 if __name__ == '__main__':
-    # Basic logging setup for test output visibility, if needed
-    # logging.basicConfig(level=logging.DEBUG)
     unittest.main()
 ```

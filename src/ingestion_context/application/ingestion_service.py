@@ -90,13 +90,15 @@ class IngestionService:
 
         decrypted_refresh_token = decrypt_token(user_m365_token_obj.encrypted_refresh_token)
         if not decrypted_refresh_token:
-            logger.error(f"Failed to decrypt refresh token for user_id: {user_id}. Possible key mismatch or corruption.")
-            # Consider deleting the corrupt token record or marking it as invalid
-            # token_repo.delete_by_user_id(user_id)
-            return None # User needs to re-authenticate
+            logger.error(f"User {user_id}: Failed to decrypt M365 refresh token or no refresh token present. Re-authentication required.")
+            # It's good practice to remove the record if the refresh token is undecryptable or missing,
+            # as it's no longer useful and might indicate corruption or an invalid state.
+            token_repo.delete_by_user_id(user_id)
+            logger.info(f"User {user_id}: Deleted M365 token record due to missing/undecryptable refresh token.")
+            return None
 
         try:
-            oauth_client = M365OAuthClient() # Instantiates with app credentials
+            oauth_client = M365OAuthClient()
             token_response = oauth_client.acquire_token_by_refresh_token(refresh_token=decrypted_refresh_token)
         except ValueError as ve: # Catch M365OAuthClient init errors (missing env vars for client itself)
             logger.error(f"M365OAuthClient configuration error: {ve}")
@@ -105,19 +107,26 @@ class IngestionService:
         if token_response and "access_token" in token_response:
             current_access_token = token_response["access_token"]
 
-            # Update stored token data if a new refresh token was issued or if expiry changed
-            # This uses the helper method in UserM365Token domain object
-            user_m365_token_obj.update_tokens(token_response, encrypt_token)
-            token_repo.save(user_m365_token_obj)
+            user_m365_token_obj.update_tokens(token_response, encrypt_token) # This updates expiry and potentially new refresh token
+            if not token_repo.save(user_m365_token_obj):
+                logger.error(f"User {user_id}: Failed to save updated M365 token to repository after refresh. Proceeding with current access token but refresh might fail next time.")
+                # Depending on policy, could raise an error or just log. For now, log and proceed.
 
-            logger.info(f"Successfully obtained/refreshed M365 access token for user_id: {user_id}.")
+            logger.info(f"User {user_id}: Successfully obtained/refreshed M365 access token.")
             return current_access_token
         else:
-            logger.error(f"Failed to acquire/refresh M365 access token for user_id: {user_id}. Response: {token_response}")
-            # This could mean the refresh token is no longer valid (e.g., revoked, expired).
-            # User would need to re-authenticate. Consider deleting the invalid token.
-            # token_repo.delete_by_user_id(user_id)
-            return None
+            # Token acquisition failed (e.g., invalid_grant, interaction_required)
+            error_details = token_response.get("error_description", "Unknown error") if token_response else "No response from token endpoint"
+            logger.error(f"User {user_id}: Failed to acquire new M365 access token using refresh token. Error: {error_details}. Re-authentication likely required.")
+
+            # If MSAL indicates the refresh token is invalid (e.g., "invalid_grant" can mean many things,
+            # but often it's an issue with the refresh token itself being expired, revoked, or malformed).
+            # Common AAD error codes for invalid refresh tokens: AADSTS70008, AADSTS700082, AADSTS70000 when grant is RT.
+            # MSAL library might wrap these into a general "invalid_grant" or specific error types if using its exceptions.
+            if token_response and token_response.get("error") in ["invalid_grant", "interaction_required", "unauthorized_client"]: # Add more specific MSAL errors if known
+                logger.info(f"User {user_id}: Deleting invalid M365 token record due to refresh failure (error: {token_response.get('error')}).")
+                token_repo.delete_by_user_id(user_id)
+            return None # Signal that re-authentication by the user is needed
 
 
     async def process_emails_from_target_mailbox(self, user_id: str, max_emails: int = 10, mark_as_read: bool = False) -> List[str]:
