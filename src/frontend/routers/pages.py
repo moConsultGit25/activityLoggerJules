@@ -194,8 +194,10 @@ async def handle_eml_upload_form(request: Request, eml_file: Annotated[UploadFil
             response = await client.post(api_upload_url, files=files, headers=headers)
             response.raise_for_status()
             response_data = response.json()
-            success_msg = response_data.get("message", "EML processed.") + f" (Task ID: {response_data.get('task_id', 'N/A')})"
-            redirect_url = request.url_for('serve_dashboard_page') + f"?message={success_msg}"
+            task_id = response_data.get('task_id', '')
+            success_msg = response_data.get("message", "EML processed.")
+            # Include task_id in redirect for JS to pick up
+            redirect_url = f"{request.url_for('serve_dashboard_page')}?message={success_msg}&submitted_task_id={task_id}"
         except httpx.HTTPStatusError as e:
             error_detail = e.response.json().get("detail", "EML processing failed.")
             redirect_url = request.url_for('serve_dashboard_page') + f"?error={error_detail}"
@@ -220,8 +222,10 @@ async def handle_cloud_sync_trigger(request: Request, max_emails: int = Form(10)
             response = await client.post(api_sync_url, headers=headers)
             response.raise_for_status()
             response_data = response.json()
-            success_msg = response_data.get("message", "Cloud sync initiated.") + f" (Task ID: {response_data.get('task_id', 'N/A')})"
-            redirect_url = request.url_for('serve_dashboard_page') + f"?message={success_msg}"
+            task_id = response_data.get('task_id', '')
+            success_msg = response_data.get("message", "Cloud sync initiated.")
+            # Include task_id in redirect for JS to pick up
+            redirect_url = f"{request.url_for('serve_dashboard_page')}?message={success_msg}&submitted_task_id={task_id}"
         except httpx.HTTPStatusError as e:
             error_detail = e.response.json().get("detail", "Cloud sync failed.")
             redirect_url = request.url_for('serve_dashboard_page') + f"?error={error_detail}"

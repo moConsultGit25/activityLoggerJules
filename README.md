@@ -15,7 +15,7 @@ It extracts key information, summarizes content, classifies it based on keywords
 *   **Asynchronous Task Processing:** Celery and Redis for background email ingestion, improving API responsiveness.
 *   **FastAPI Web App:**
     *   **Backend API:** User registration, JWT-based login, M365 OAuth 2.0 flow for user mailbox connection, asynchronous email ingestion (file upload & M365 cloud sync), activity log retrieval (paginated), and Celery task status checking.
-    *   **Frontend UI:** Jinja2-templated interface for registration, login/logout, dashboard, EML file upload, M365 account connection/disconnection, M365 email sync trigger, and activity log display.
+    *   **Frontend UI:** Jinja2-templated interface for registration, login/logout, dashboard. The dashboard allows EML file upload, M365 account connection/disconnection, triggering M365 email sync, and viewing activity logs. It now also provides dynamic updates for background task statuses (e.g., for email ingestion tasks): when these operations are initiated, their status (Queued, In Progress, Completed, Failed) and any results or errors are displayed and updated in real-time on the page without requiring a manual refresh.
 *   **Email Ingestion Sources:**
     *   Local `.eml` file uploads (processed asynchronously).
     *   User-specific Microsoft 365 mailboxes via Microsoft Graph API (using OAuth 2.0 user-delegated permissions, processed asynchronously).

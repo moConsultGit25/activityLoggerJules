@@ -8,7 +8,7 @@
     <p>Welcome, {{ request.state.username }}!</p>
 
     {# Display success/error messages from query parameters #}
-    {% if request.query_params.get('message') %}
+    {% if request.query_params.get('message') and not request.query_params.get('submitted_task_id') %} {# Avoid showing generic message if task specific one will be shown by JS #}
         <div class="alert alert-success alert-dismissible fade show" role="alert">
             {{ request.query_params.get('message') }}
             <button type="button" class="close" data-dismiss="alert" aria-label="Close">
@@ -25,30 +25,49 @@
         </div>
     {% endif %}
 
+    <!-- Background Task Status Section -->
+    <div class="card mb-4">
+        <div class="card-header">
+            Background Task Status
+        </div>
+        <div class="card-body">
+            <div id="task-status-area">
+                <p id="initial-task-message">No new tasks submitted recently, or status already processed.</p>
+                <!-- JavaScript will populate this with status of submitted_task_id -->
+            </div>
+            {# <ul id="task-list" class="list-group"></ul> Future: for listing multiple tasks #}
+        </div>
+    </div>
+
     <!-- Microsoft 365 Connection -->
     <div class="card mb-4">
         <div class="card-header">
             Microsoft 365 Account Connection
         </div>
         <div class="card-body">
-            {% if m365_connection_status and m365_connection_status.is_connected %}
-                <p class="text-success"><strong>Status: Connected</strong></p>
-                {% if m365_connection_status.account_email %}
-                    <p>Connected Account: {{ m365_connection_status.account_email }}</p>
-                {% endif %}
-                <form method="post" action="{{ request.url_for('handle_m365_disconnect') }}">
-                    <button type="submit" class="btn btn-danger btn-sm">Disconnect M365 Account</button>
-                </form>
-            {% else %}
-                <p class="text-muted">Status: Not Connected</p>
-                <p>Connect your Microsoft 365 account to enable fetching emails directly from your mailbox.</p>
-                <a href="{{ request.url_for('initiate_m365_auth_frontend') }}" class="btn btn-success">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-microsoft" viewBox="0 0 16 16">
-                        <path d="M7.462 0H0v7.19h7.462V0zM16 0H8.538v7.19H16V0zM7.462 8.211H0V16h7.462V8.211zm8.538 0H8.538V16H16V8.211z"/>
-                    </svg>
-                    Connect Microsoft 365 Account
-                </a>
-            {% endif %}
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    {% if m365_connection_status and m365_connection_status.is_connected %}
+                        <p class="text-success mb-1"><strong>Status: Connected</strong></p>
+                        {% if m365_connection_status.account_email %}
+                            <p class="small mb-2">Account: {{ m365_connection_status.account_email }}</p>
+                        {% endif %}
+                        <form method="post" action="{{ request.url_for('handle_m365_disconnect') }}" id="disconnect-m365-form" class="d-inline">
+                            <button type="submit" class="btn btn-danger btn-sm" id="disconnect-m365-btn">Disconnect M365 Account</button>
+                        </form>
+                    {% else %}
+                        <p class="text-muted mb-1">Status: Not Connected</p>
+                        <p class="small mb-2">Connect your Microsoft 365 account to fetch emails directly.</p>
+                        <a href="{{ request.url_for('initiate_m365_auth_frontend') }}" class="btn btn-success btn-sm" id="connect-m365-btn">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-microsoft" viewBox="0 0 16 16">
+                                <path d="M7.462 0H0v7.19h7.462V0zM16 0H8.538v7.19H16V0zM7.462 8.211H0V16h7.462V8.211zm8.538 0H8.538V16H16V8.211z"/>
+                            </svg>
+                            Connect Microsoft 365 Account
+                        </a>
+                    {% endif %}
+                </div>
+            </div>
+            <span id="m365-action-feedback" class="text-muted small mt-2 d-block"></span> <!-- Feedback area -->
         </div>
     </div>
 

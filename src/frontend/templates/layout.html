@@ -72,6 +72,9 @@
             integrity="sha384-p2jxC9A6S9Lq9P9gM8T4E9hP3KScvR6O6I9N2N2j3p6Sj7kX7pP4iC3r" crossorigin="anonymous"></script>
     <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"
             integrity="sha384-B4gt1jrGC7Jh4AgTPSdUtOBvfO8shuf57BaghqFfPlYxofvL8/KUEfYiJOMMV+rV" crossorigin="anonymous"></script>
-    {% block scripts %}{% endblock %}
+
+    <!-- Custom JavaScript -->
+    <script src="{{ url_for('static', path='/js/main.js') }}"></script>
+    {% block scripts %}{% endblock %} {# For page-specific scripts #}
 </body>
 </html>
