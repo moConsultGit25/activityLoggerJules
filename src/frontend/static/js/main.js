@@ -289,7 +289,43 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Clear M365 specific feedback if a general page message exists that isn't about M365 connection itself.
     if (m365ActionFeedback && messageFromQuery && !messageFromQuery.toLowerCase().includes("m365")) {
-        m365ActionFeedback.textContent = '';
+        // m365ActionFeedback.textContent = ''; // Decided against this to allow M365 specific redirect messages to persist
+    }
+
+    // --- Google Gmail Connection UI Logic ---
+    const connectGoogleBtn = document.getElementById('connect-google-btn');
+    const disconnectGoogleForm = document.getElementById('disconnect-google-form'); // Assuming form ID
+    const googleActionFeedback = document.getElementById('google-action-feedback');
+
+    if (connectGoogleBtn && googleActionFeedback) {
+        connectGoogleBtn.addEventListener('click', function(event) {
+            if (this.classList.contains('disabled')) {
+                event.preventDefault(); return;
+            }
+            this.classList.add('disabled');
+            this.setAttribute('aria-disabled', 'true');
+            this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Redirecting to Google...';
+            googleActionFeedback.className = 'text-info small mt-2 d-block'; // Use consistent class for feedback
+            googleActionFeedback.textContent = 'Redirecting to Google for authorization... Please wait.';
+            // Allow default link navigation
+        });
+    }
+
+    if (disconnectGoogleForm && googleActionFeedback) {
+        disconnectGoogleForm.addEventListener('submit', function() { // Listen on form submit
+            const disconnectBtn = document.getElementById('disconnect-google-btn');
+            if (disconnectBtn) {
+                disconnectBtn.disabled = true;
+                disconnectBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...';
+            }
+            googleActionFeedback.className = 'text-info small mt-2 d-block';
+            googleActionFeedback.textContent = 'Processing Gmail disconnection... Please wait.';
+            // Allow default form submission
+        });
+    }
+    // Similar logic to clear googleActionFeedback if needed, can be added if general messages interfere.
+    if (googleActionFeedback && messageFromQuery && !messageFromQuery.toLowerCase().includes("google")) {
+        // googleActionFeedback.textContent = '';
     }
 });
 ```

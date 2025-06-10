@@ -143,3 +143,41 @@ def process_eml_file_task(self, eml_content_str: str, original_filename: str, so
                 logger.info(f"[Task ID: {task_id}] Cleaned up temporary file: {temp_file_path}")
             except Exception as e_cleanup:
                 logger.error(f"[Task ID: {task_id}] Error cleaning up temporary file {temp_file_path}: {e_cleanup}")
+
+
+@app.task(bind=True, name='ingestion.process_google_mailbox')
+def process_google_mailbox_task(self, user_id: str, max_emails: int = 10, mark_as_read: bool = True) -> Dict[str, Any]:
+    """
+    Celery task to process unread emails from the user's connected Gmail mailbox
+    using their stored Google OAuth tokens.
+    """
+    task_id = self.request.id
+    logger.info(f"[Task ID: {task_id}] Starting Google mailbox processing for user {user_id} (max_emails={max_emails}, mark_as_read={mark_as_read})")
+    try:
+        ingestion_service = IngestionService() # Instantiate service inside task
+
+        # IngestionService.process_user_google_mailbox is an async method
+        processed_ids = asyncio.run(ingestion_service.process_user_google_mailbox(
+            user_id=user_id,
+            max_emails=max_emails,
+            mark_as_read=mark_as_read
+        ))
+
+        message = f"Google mailbox processing completed for user {user_id}. Processed {len(processed_ids)} emails."
+        logger.info(f"Task {task_id}: {message}")
+        return {
+            "task_id": str(task_id),
+            "status": "SUCCESS",
+            "message": message,
+            "processed_count": len(processed_ids),
+            "processed_ids": processed_ids
+        }
+    except Exception as e:
+        logger.error(f"Task {task_id}: Error during Google mailbox processing for user {user_id}: {e}", exc_info=True)
+        return {
+            "task_id": str(task_id),
+            "status": "FAILURE",
+            "message": f"An error occurred during Google mailbox processing: {str(e)}",
+            "error": str(e),
+            "processed_count": 0
+        }

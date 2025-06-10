@@ -2,7 +2,7 @@
 
 ## Description
 
-This project automatically processes and logs activity from various engagement data sources. Initially focused on email (.eml) files (processed via local upload or from Microsoft 365 mailboxes using Microsoft Graph API), it can be extended for other data sources.
+This project automatically processes and logs activity from various engagement data sources. Initially focused on email (.eml) files (processed via local upload or from Microsoft 365 and Google Gmail mailboxes using their respective APIs), it can be extended for other data sources.
 
 The system is architected using Domain-Driven Design (DDD) principles. An event-driven approach (currently in-process) decouples different stages of processing. For potentially long-running tasks like email ingestion, asynchronous processing is handled by Celery with Redis as the message broker and result backend, significantly improving API responsiveness.
 
@@ -12,17 +12,18 @@ It extracts key information, summarizes content, classifies it based on keywords
 
 *   **Domain-Driven Design:** Organized into Bounded Contexts for clear separation of concerns.
 *   **Event-Driven Architecture:** In-process event dispatcher for decoupled communication post-task processing.
-*   **Asynchronous Task Processing:** Celery and Redis for background email ingestion, improving API responsiveness.
+*   **Asynchronous Task Processing:** Celery and Redis for background email ingestion.
 *   **FastAPI Web App:**
-    *   **Backend API:** User registration, JWT-based login, M365 OAuth 2.0 flow for user mailbox connection, asynchronous email ingestion (file upload & M365 cloud sync), activity log retrieval (paginated), and Celery task status checking.
-    *   **Frontend UI:** Jinja2-templated interface for registration, login/logout, dashboard. The dashboard allows EML file upload, M365 account connection/disconnection, triggering M365 email sync, and viewing activity logs. It now also provides dynamic updates for background task statuses (e.g., for email ingestion tasks): when these operations are initiated, their status (Queued, In Progress, Completed, Failed) and any results or errors are displayed and updated in real-time on the page without requiring a manual refresh.
+    *   **Backend API:** User registration, JWT-based login, OAuth 2.0 flows for user mailbox connection (Microsoft 365 & Google Gmail), asynchronous email ingestion, activity log retrieval, and Celery task status checking.
+    *   **Frontend UI:** Jinja2-templated interface for user interactions, including M365 & Google account connections.
 *   **Email Ingestion Sources:**
-    *   Local `.eml` file uploads (processed asynchronously).
-    *   User-specific Microsoft 365 mailboxes via Microsoft Graph API (using OAuth 2.0 user-delegated permissions, processed asynchronously).
+    *   Local `.eml` file uploads (asynchronous).
+    *   User-specific Microsoft 365 mailboxes via Microsoft Graph API (OAuth 2.0 user-delegated, async).
+    *   (Planned) User-specific Google Gmail mailboxes via Gmail API (OAuth 2.0 user-delegated, async).
 *   **Core Processing:** Email parsing, text summarization, keyword-based content classification.
 *   **Secure Storage:**
     *   MongoDB for user credentials (hashed passwords) and activity records.
-    *   Encrypted storage for user-specific M365 refresh tokens.
+    *   Encrypted storage for user-specific M365 and Google refresh tokens.
 *   **Redis:** Celery message broker and result backend.
 *   **JWT Authentication:** Secures API endpoints.
 *   **Containerized Environment:** `Dockerfile` (dev), `Dockerfile.prod` (production), `docker-compose.yml` (local full stack).
@@ -36,49 +37,19 @@ It extracts key information, summarizes content, classifies it based on keywords
 ```
 .
 ├── AZURE_AD_OAUTH_SETUP.md   # Guide for Azure AD App Registration for M365 OAuth
-├── data/                     # Sample data
-├── gcp_configs/              # GCP specific configurations
-│   └── cloudrun/service.yaml # Example Cloud Run service definition
-├── scripts/                  # Deployment and utility scripts
+├── GOOGLE_GMAIL_API_SETUP.md # Guide for Google Cloud Project & Gmail API OAuth Setup
+├── data/
+├── gcp_configs/
+│   └── cloudrun/service.yaml
+├── scripts/
 │   ├── setup_gcp_secrets.sh
 │   └── trigger_cloud_build.sh
-├── src/                      # Source code
-│   ├── activity_log_context/
-│   ├── analysis_context/
-│   ├── api/                    # FastAPI application (src.api.main:app)
-│   │   ├── v1/
-│   │   │   ├── routers/      # API routers (auth, ingestion, logs, m365_auth, tasks)
-│   │   │   └── schemas/      # Pydantic schemas
-│   │   ├── dependencies.py
-│   │   └── main.py
-│   ├── auth_context/         # User authentication, M365 OAuth logic
-│   │   ├── application/      # AuthService, security utils, encryption utils
-│   │   ├── domain/           # User, UserM365Token models
-│   │   └── infrastructure/   # Repositories, M365OAuthClient
-│   ├── frontend/             # Jinja2 templates, static files, frontend routers
-│   ├── ingestion_context/
-│   │   └── tasks.py          # Celery tasks for ingestion
-│   ├── shared_kernel/
-│   │   └── events.py
-│   ├── task_queue/           # Celery application and configuration
-│   │   ├── celery_app.py
-│   │   └── celery_config.py
-│   ├── __init__.py
-│   └── main.py               # CLI entry point (manual EML processing)
-├── tests/                    # Unit tests (structure mirrors src/)
-│   ├── auth_context/
-│   │   ├── application/
-│   │   ├── infrastructure/
-│   # ... other test context directories
-├── .dockerignore
-├── Dockerfile                # For development (used by docker-compose)
-├── Dockerfile.prod           # For production builds
-├── cloudbuild.yaml           # GCP Cloud Build configuration
-├── docker-compose.yml        # Local development with Docker (app, mongo, redis, worker)
-├── DEPLOYMENT_GCP.md         # Detailed GCP deployment plan
-├── README.md                 # This file
-└── requirements.txt          # Python dependencies
+├── src/
+# ... (rest of the structure remains the same) ...
+├── README.md
+└── requirements.txt
 ```
+*(Simplified structure view for brevity)*
 
 ## Setup and Local Development
 
@@ -87,6 +58,7 @@ It extracts key information, summarizes content, classifies it based on keywords
 *   Docker and Docker Compose
 *   (Optional) Native MongoDB, Redis.
 *   (Optional) Azure AD App Registration for M365 OAuth (see [AZURE_AD_OAUTH_SETUP.md](AZURE_AD_OAUTH_SETUP.md)).
+*   (Optional) Google Cloud Project and OAuth Credentials for Gmail API (see [GOOGLE_GMAIL_API_SETUP.md](GOOGLE_GMAIL_API_SETUP.md)).
 
 ### 1. Clone the Repository
 ```bash
@@ -97,7 +69,7 @@ cd <repository_name>
 ### 2. Environment Variables
 Create a `.env` file in the project root.
 
-**Key Environment Variables (see `.env.example` or `AZURE_AD_OAUTH_SETUP.md` for full list):**
+**Key Environment Variables (see linked setup documents for full details):**
 ```env
 # Core
 MONGO_URI="mongodb://mongo:27017/activity_db_compose"
@@ -106,23 +78,31 @@ REDIS_URL="redis://redis:6379/0"
 JWT_SECRET_KEY="!! YOUR_STRONG_JWT_SECRET_KEY !!"
 ACCESS_TOKEN_EXPIRE_MINUTES="60"
 
-# M365 User-Delegated OAuth & Token Encryption
-AZURE_CLIENT_ID=""      # From your Azure AD App Registration
-AZURE_TENANT_ID=""      # From your Azure AD App Registration
-AZURE_CLIENT_SECRET=""  # Client Secret Value from your Azure AD App Registration
-M365_REDIRECT_URI="http://localhost:8000/api/v1/auth/m365/callback" # For local dev
+# --- Microsoft 365 User-Delegated OAuth & Token Encryption ---
+AZURE_CLIENT_ID=""
+AZURE_TENANT_ID=""
+AZURE_CLIENT_SECRET=""
+M365_REDIRECT_URI="http://localhost:8000/api/v1/auth/m365/callback"
 M365_SCOPES="Mail.Read User.Read offline_access"
-M365_TOKEN_ENCRYPTION_KEY="!! YOUR_FERNET_ENCRYPTION_KEY_FOR_M365_TOKENS !!" # See generation below
+M365_TOKEN_ENCRYPTION_KEY="!! YOUR_FERNET_ENCRYPTION_KEY_FOR_M365_TOKENS !!"
 STATE_SERIALIZER_SECRET_KEY="!! YOUR_STRONG_SECRET_KEY_FOR_OAUTH_STATE !!" # Can reuse/derive from JWT_SECRET_KEY for dev
 
-# (Optional) App-Only Graph API (if a separate single-mailbox direct sync feature is maintained)
+# --- Google Gmail User-Delegated OAuth & Token Encryption ---
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+GOOGLE_REDIRECT_URI="http://localhost:8000/api/v1/auth/google/callback" # For local dev
+GOOGLE_SCOPES="https://www.googleapis.com/auth/gmail.readonly openid email profile" # Space-separated
+GOOGLE_TOKEN_ENCRYPTION_KEY="!! YOUR_FERNET_ENCRYPTION_KEY_FOR_GOOGLE_TOKENS !!" # Generate similarly to M365 key
+
+# (Optional) App-Only Graph API for a single M365 mailbox (if still used)
 # GRAPH_TARGET_USER_ID=""
 # GRAPH_MAIL_FOLDER="Inbox"
 ```
 **Important Notes on Environment Variables:**
-*   Refer to [AZURE_AD_OAUTH_SETUP.md](AZURE_AD_OAUTH_SETUP.md) for Azure AD App Registration.
-*   `JWT_SECRET_KEY`, `M365_TOKEN_ENCRYPTION_KEY`, `STATE_SERIALIZER_SECRET_KEY` are critical for security. Generate strong random keys.
-*   For `M365_TOKEN_ENCRYPTION_KEY` (Fernet key):
+*   Refer to [AZURE_AD_OAUTH_SETUP.md](AZURE_AD_OAUTH_SETUP.md) for Azure AD.
+*   Refer to [GOOGLE_GMAIL_API_SETUP.md](GOOGLE_GMAIL_API_SETUP.md) for Google Cloud Project setup.
+*   `JWT_SECRET_KEY`, `M365_TOKEN_ENCRYPTION_KEY`, `GOOGLE_TOKEN_ENCRYPTION_KEY`, `STATE_SERIALIZER_SECRET_KEY` are critical for security. Generate strong random keys.
+*   For Fernet encryption keys (e.g., `M365_TOKEN_ENCRYPTION_KEY`, `GOOGLE_TOKEN_ENCRYPTION_KEY`):
     ```python
     from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())
     ```
@@ -134,58 +114,23 @@ STATE_SERIALIZER_SECRET_KEY="!! YOUR_STRONG_SECRET_KEY_FOR_OAUTH_STATE !!" # Can
 (Instructions remain largely the same)
 
 ## Usage
+(As previously described, noting new M365 and planned Google OAuth flows in API and frontend)
 
-*   **Web Interface:** Access `http://localhost:8000/app/`.
-    *   Register and login.
-    *   Connect your Microsoft 365 account via the dashboard to authorize email reading.
-    *   Upload EML files or trigger cloud mailbox sync (these actions are now asynchronous).
-    *   View processed activity logs.
-*   **API Endpoints (see `http://localhost:8000/docs` for full details):**
-    *   **Authentication:**
-        *   `POST /api/v1/auth/register`: Create a new user.
-        *   `POST /api/v1/auth/login`: Login to get a JWT access token.
-    *   **M365 OAuth (User-Delegated):**
-        *   `GET /api/v1/auth/m365/authorize`: Initiates the M365 OAuth flow (redirects to Microsoft). Called by frontend.
-        *   `GET /api/v1/auth/m365/callback`: Handles the callback from Microsoft after user consent. Stores tokens. Called by Microsoft.
-        *   `POST /api/v1/auth/m365/disconnect`: Disconnects the user's M365 account by deleting stored tokens. Requires JWT auth.
-        *   `GET /api/v1/auth/m365/status`: Checks if the current user has a connected M365 account. Requires JWT auth.
-    *   **Ingestion (Asynchronous - return Task ID):**
-        *   `POST /api/v1/ingestion/process-eml/`: Upload an `.eml` file. Requires JWT auth.
-        *   `POST /api/v1/ingestion/trigger-cloud-mailbox-sync/`: Trigger sync for the authenticated user's connected M365 mailbox. Requires JWT auth.
-    *   **Task Status:**
-        *   `GET /api/v1/tasks/{task_id}/status`: Check status and result of a Celery task. Requires JWT auth.
-    *   **Activity Logs:**
-        *   `GET /api/v1/logs/`: Retrieve paginated activity logs. Requires JWT auth.
-*   **CLI for local EML processing:** `python src.main:main --email-file data/sample_email.eml`.
+### Microsoft 365 / Google Connection Issues
+(Section updated to be more generic if applicable, or keep M365 specific and add a Google one later)
+If you find that your connected cloud email account (Microsoft 365 or Google) is no longer syncing, or if the dashboard unexpectedly shows "Status: Not Connected" after you previously connected it, your authorization tokens stored by this application may have become invalid. This can happen for various reasons (token expiry/revocation, key changes, etc.).
 
-### Microsoft 365 Connection Issues
-
-If you find that your Microsoft 365 account is no longer syncing emails, or if the dashboard unexpectedly shows "Status: Not Connected" after you previously connected it, your authorization tokens stored by this application may have become invalid. This can happen for several reasons, such as:
-*   The refresh token expired (though they are typically long-lived).
-*   The refresh token was revoked by Microsoft (e.g., due to a password change, security event, or explicit user revocation of app permissions in their Microsoft account settings).
-*   The `M365_TOKEN_ENCRYPTION_KEY` used by the application was changed, making previously stored tokens undecryptable.
-
-Our application automatically detects these invalid token scenarios. For your security and to ensure proper functionality, if an invalid M365 refresh token is detected (e.g., during an attempt to refresh your access or fetch emails), the application will remove the old, invalid token information from its database.
+Our application automatically detects these invalid token scenarios. For your security, if an invalid refresh token is detected, the application will remove the old token information.
 
 **To resolve this, you will need to re-authorize the application:**
-
-1.  Navigate to the **Dashboard** in the application (usually found at `/app/dashboard` when running locally).
-2.  In the "Microsoft 365 Account Connection" section:
-    *   If you see a "Disconnect M365 Account" button, it's good practice to click this first to ensure any remnants of the old connection are cleared from our application's database.
-    *   Then, click the **"Connect Microsoft 365 Account"** button.
-3.  You will be redirected to Microsoft to sign in and re-authorize the application to access your mailbox for reading emails.
-4.  After successful authorization, you should be redirected back to the dashboard, and the status should show as "Connected".
-
-This process will provide the application with new, valid tokens to access your M365 mailbox on your behalf.
-
-## Running Tests
-(Remains the same)
+1.  Go to the **Dashboard**.
+2.  In the relevant connection section (Microsoft 365 or Google), click "Disconnect" if available, then "Connect".
+3.  Follow the prompts to sign in to your Microsoft/Google account and grant permissions.
 
 ## Deployment
-(Remains largely the same, ensure link to `DEPLOYMENT_GCP.md` is prominent. Emphasize that all new ENV VARS like `M365_TOKEN_ENCRYPTION_KEY` and `STATE_SERIALIZER_SECRET_KEY` must be configured as secrets in the cloud environment.)
+See [DEPLOYMENT_GCP.md](DEPLOYMENT_GCP.md). Ensure all necessary environment variables, including those for M365 and Google OAuth, are configured as secrets in your cloud environment.
 
 ## Future Enhancements
-(Adjust as needed, e.g., "Full M365 OAuth integration" is now mostly complete.)
-*   Frontend UI for displaying Celery task statuses and results more actively.
+*   Full implementation of Google Gmail OAuth flow (backend and frontend).
 *   ... (other enhancements)
 ```
